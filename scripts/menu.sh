@@ -50,6 +50,15 @@ log_msg() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_DIR/panel.log"
 }
 
+ensure_vpn_shell_allowed() {
+    local vpn_shell="/bin/false"
+    [[ $EUID -eq 0 && -x "$vpn_shell" && -f /etc/shells ]] || return 0
+    if ! grep -Fxq -- "$vpn_shell" /etc/shells; then
+        printf '%s\n' "$vpn_shell" >> /etc/shells || return 1
+        log_msg "DROPBEAR_SHELL_COMPAT: registered /bin/false for non-interactive VPN accounts"
+    fi
+}
+
 # ===================== User Management =====================
 
 create_user() {
@@ -89,6 +98,11 @@ create_user() {
     read -p "Note (optional): " note
 
     # Create the Linux account
+    ensure_vpn_shell_allowed || {
+        echo -e "${RED}Could not configure the non-interactive shell for Dropbear.${NC}"
+        sleep 2
+        return
+    }
     useradd -m -s /bin/false -e "$expire_date" "$username" 2>/dev/null || {
         echo -e "${RED}Could not create the Linux account.${NC}"
         sleep 2
@@ -125,6 +139,49 @@ create_user() {
     log_msg "USER_CREATE: $username | expire: $expire_date | devices: $max_dev"
     echo ""
     read -p "Press Enter to return..."
+}
+
+reset_user_password() {
+    local username new_password exists
+    clear_screen
+    print_title "RESET SSH ACCOUNT PASSWORD"
+    read -r -p "Username: " username
+    if [[ ! "$username" =~ ^[a-zA-Z_][a-zA-Z0-9_.-]*$ ]]; then
+        echo -e "${RED}Invalid username format.${NC}"
+        sleep 2
+        return
+    fi
+
+    exists=$(sqlite3 "$DB" "SELECT COUNT(*) FROM users WHERE username='$username';" 2>/dev/null)
+    if [[ "$exists" != "1" ]] || ! id "$username" >/dev/null 2>&1; then
+        echo -e "${RED}Panel account not found. Create it from option 1 first.${NC}"
+        sleep 2
+        return
+    fi
+    ensure_vpn_shell_allowed || {
+        echo -e "${RED}Could not configure the non-interactive shell for Dropbear.${NC}"
+        sleep 2
+        return
+    }
+
+    new_password=$(openssl rand -hex 10) || {
+        echo -e "${RED}Could not generate a password.${NC}"
+        sleep 2
+        return
+    }
+    if ! printf '%s:%s\n' "$username" "$new_password" | chpasswd; then
+        echo -e "${RED}Password reset failed.${NC}"
+        sleep 2
+        return
+    fi
+    sqlite3 "$DB" "UPDATE users SET password='$new_password' WHERE username='$username';"
+    log_msg "PASSWORD_RESET: $username"
+    echo ""
+    echo -e "${GREEN}Password reset. Enter these credentials in your SSH client:${NC}"
+    printf '%bUsername:%b %s\n' "$CYAN" "$NC" "$username"
+    printf '%bNew password:%b %s\n' "$YELLOW" "$NC" "$new_password"
+    echo ""
+    read -r -p "Copy the password now, then press Enter to return..."
 }
 
 delete_user() {
@@ -365,6 +422,7 @@ main_menu() {
         echo -e "${GREEN}  8)${NC} ◈  Server health"
         echo -e "${GREEN}  9)${NC} ↻  Restart services"
         echo -e "${GREEN} 10)${NC} ◷  Extend account"
+        echo -e "${GREEN} 11)${NC} 🔑 Reset account password"
         echo ""
         echo -e "${RED}  0)${NC} ⏻  Exit"
         echo ""
@@ -398,6 +456,7 @@ main_menu() {
                 fi
                 sleep 2
                 ;;
+            11) reset_user_password ;;
             0) exit 0 ;;
             *) echo -e "${RED}Invalid option.${NC}"; sleep 1 ;;
         esac
@@ -424,4 +483,5 @@ ensure_project_defaults() {
 }
 
 ensure_project_defaults
+ensure_vpn_shell_allowed
 main_menu

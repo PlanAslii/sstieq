@@ -29,7 +29,7 @@ LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
 GITHUB_REPO="https://raw.githubusercontent.com/PlanAslii/sstieq/main"
 SUCCESS_WORKER_URL="https://mute-bar-da37.planasli1.workers.dev/"
-VERSION="1.1.4"
+VERSION="1.2.0"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 print_banner() {
@@ -190,7 +190,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', 'https://mute-bar-da37.planasli1.workers.dev/');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.1.4');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.2.0');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'PlanAslii/sstieq');
 EOF
     sqlite3 "$DB_DIR/users.db" << 'EOF'
@@ -200,6 +200,9 @@ WHERE key='success_worker_url' AND (value IS NULL OR value='');
 UPDATE settings
 SET value='PlanAslii/sstieq'
 WHERE key='github_repo' AND (value IS NULL OR value='' OR value='YOUR_USERNAME/ssh-vpn-panel');
+UPDATE settings
+SET value='1.2.0'
+WHERE key='panel_version';
 EOF
     chmod 600 "$DB_DIR/users.db"
     echo -e "${GREEN}[OK] Database is ready.${NC}"
@@ -225,6 +228,12 @@ EOF
     fi
     if [[ ! -f /etc/dropbear/dropbear_ed25519_host_key ]]; then
         dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key 2>/dev/null || true
+    fi
+
+    # Dropbear rejects users whose shell is not listed in /etc/shells.
+    # Panel accounts use /bin/false to prevent interactive shell access.
+    if [[ -x /bin/false && -f /etc/shells ]] && ! grep -Fxq '/bin/false' /etc/shells; then
+        printf '\n/bin/false\n' >> /etc/shells
     fi
 
     systemctl enable dropbear

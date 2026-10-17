@@ -1,4 +1,4 @@
-# SSH VPN Panel v1.1.4
+# SSH VPN Panel v1.2.0
 
 A colorful, English-language terminal panel for managing SSH accounts with Dropbear, Stunnel, Squid, and BadVPN UDPGW. The login banner can be customized independently through a Cloudflare Worker.
 
@@ -10,6 +10,8 @@ A colorful, English-language terminal panel for managing SSH accounts with Dropb
 - Create, delete, list, and extend SSH accounts.
 - SQLite storage for accounts, settings, and connection history.
 - PlanAsli-branded Cloudflare Worker login banner, preconfigured for the supplied Worker URL.
+- Automatic Dropbear compatibility for panel accounts using the non-interactive `/bin/false` shell.
+- In-panel password reset with a generated password (menu option 11).
 - Dropbear SSH: `143, 444, 666, 5555, 701, 179`.
 - Stunnel TLS: `110, 443, 587`.
 - Squid proxy: `8080, 8000, 3128`.
@@ -53,6 +55,7 @@ sudo sshvpn
 | 8 | View server health and services |
 | 9 | Restart services |
 | 10 | Extend an account |
+| 11 | Reset an account password |
 | 0 | Exit |
 
 ## Customize the connection banner
@@ -60,6 +63,8 @@ sudo sshvpn
 The panel is preconfigured with `https://mute-bar-da37.planasli1.workers.dev/`. The suggested banner is branded **PlanAsli**.
 
 To customize it, edit the `banner` constant in `worker/success-worker.js` and redeploy that Worker. On a fresh install, the installer fetches the banner automatically. On an existing server, open `sshvpn`, choose option **6**, and press Enter to fetch the current Worker message again. Keep the response as plain text—many SSH clients show it in their logs and may display ANSI color codes literally.
+
+On install and at panel startup, the project ensures `/bin/false` is listed in `/etc/shells`, because Dropbear checks a user's configured shell before accepting authentication. The shell remains non-interactive. Use menu option **11** to generate and set a new account password without running shell commands manually.
 
 ## GitHub updates
 
