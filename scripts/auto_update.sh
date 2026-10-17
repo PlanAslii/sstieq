@@ -1,0 +1,75 @@
+#!/bin/bash
+# Auto Updater from GitHub
+# ========================
+
+PANEL_DIR="/etc/ssh-vpn-panel"
+SCRIPT_DIR="$PANEL_DIR/scripts"
+DB="$PANEL_DIR/db/users.db"
+LOG="$PANEL_DIR/logs/update.log"
+TMP="/tmp/ssh-vpn-update"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG"
+}
+
+repo=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='github_repo';" 2>/dev/null)
+if [[ -z "$repo" || "$repo" == "YOUR_USERNAME/ssh-vpn-panel" ]]; then
+    log "ERROR: GitHub repo not configured. Skip update."
+    exit 1
+fi
+
+log "Checking update from github.com/$repo ..."
+
+# دانلود نسخه
+remote_ver=$(curl -sL "https://raw.githubusercontent.com/$repo/main/VERSION" 2>/dev/null | tr -d '\r\n')
+local_ver=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='panel_version';")
+
+if [[ -z "$remote_ver" ]]; then
+    log "ERROR: Could not fetch remote VERSION."
+    exit 1
+fi
+
+if [[ "$remote_ver" == "$local_ver" ]]; then
+    log "Already up to date (v$local_ver)."
+    exit 0
+fi
+
+log "New version available: $remote_ver (local: $local_ver). Downloading..."
+
+rm -rf "$TMP"
+mkdir -p "$TMP"
+cd "$TMP"
+
+# دانلود zip از GitHub
+curl -sL "https://github.com/$repo/archive/refs/heads/main.zip" -o update.zip
+if [[ ! -f update.zip ]]; then
+    log "ERROR: Download failed."
+    exit 1
+fi
+
+unzip -qo update.zip
+folder=$(ls -d */ | head -1)
+
+if [[ -z "$folder" ]]; then
+    log "ERROR: Extract failed."
+    exit 1
+fi
+
+# بکاپ اسکریپت‌های فعلی
+cp -r "$SCRIPT_DIR" "$SCRIPT_DIR.bak.$(date +%s)" 2>/dev/null || true
+
+# کپی فایل‌های جدید
+cp -r "$folder/scripts/"* "$SCRIPT_DIR/" 2>/dev/null || true
+cp -r "$folder/config/"* "$PANEL_DIR/config/" 2>/dev/null || true
+cp -r "$folder/worker/"* "$PANEL_DIR/worker/" 2>/dev/null || true
+
+chmod +x "$SCRIPT_DIR"/*.sh
+
+# آپدیت نسخه در دیتابیس
+sqlite3 "$DB" "UPDATE settings SET value='$remote_ver' WHERE key='panel_version';"
+
+log "Update to v$remote_ver completed successfully."
+rm -rf "$TMP"
+
+# ریستارت سرویس‌های ضروری (اختیاری)
+# systemctl restart dropbear
