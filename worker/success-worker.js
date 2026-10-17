@@ -10,13 +10,15 @@
  */
 const banner = `
 ╭──────────────────────────────────────────────────────────╮
-│                 ✨  YOU'RE CONNECTED  ✨                 │
+│                 ✨  PLANASLI CONNECTED  ✨                │
 ├──────────────────────────────────────────────────────────┤
-│  🚀  SSH VPN  ·  SECURE TUNNEL                           │
+│  🔐  SECURE SSH TUNNEL                                   │
 │  🟢  STATUS: ONLINE                                      │
 │                                                          │
-│  Your connection is ready. Enjoy a smooth session.      │
-│  Need help? Contact: @YourSupport                        │
+│  Fast, private, and ready to go.                         │
+│  Enjoy the connection — powered by PlanAsli.             │
+│                                                          │
+│  Stay secure. Stay connected.                            │
 ╰──────────────────────────────────────────────────────────╯
 `.trim();
 

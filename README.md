@@ -1,4 +1,4 @@
-# SSH VPN Panel v1.1.0
+# SSH VPN Panel v1.1.1
 
 A colorful, English-language terminal panel for managing SSH accounts with Dropbear, Stunnel, Squid, and BadVPN UDPGW. The login banner can be customized independently through a Cloudflare Worker.
 
@@ -9,7 +9,7 @@ A colorful, English-language terminal panel for managing SSH accounts with Dropb
 - Colorized installer and terminal menu (respects `NO_COLOR`).
 - Create, delete, list, and extend SSH accounts.
 - SQLite storage for accounts, settings, and connection history.
-- Optional Cloudflare Worker-backed login banner.
+- PlanAsli-branded Cloudflare Worker login banner, preconfigured for the supplied Worker URL.
 - Dropbear SSH: `143, 444, 666, 5555, 701, 179`.
 - Stunnel TLS: `110, 443, 587`.
 - Squid proxy: `8080, 8000, 3128`.
@@ -27,8 +27,8 @@ Ubuntu 26.04 has been added to the installer's OS allowlist, but the installatio
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/ssh-vpn-panel.git
-cd ssh-vpn-panel
+git clone https://github.com/PlanAslii/sstieq.git
+cd sstieq
 chmod +x install.sh
 sudo ./install.sh
 ```
@@ -57,16 +57,13 @@ sudo sshvpn
 
 ## Customize the connection banner
 
-1. Deploy `worker/success-worker.js` as a Cloudflare Worker.
-2. Edit the `banner` constant in that file to change the wording, emoji, or contact label.
-3. Copy the Worker URL (for example, `https://ssh-success.example.workers.dev`).
-4. In `sshvpn`, choose option **6** and save the URL.
+The panel is preconfigured with `https://mute-bar-da37.planasli1.workers.dev/`. The suggested banner is branded **PlanAsli**.
 
-The server fetches the Worker response and uses it as the Dropbear login banner. Editing and redeploying the Worker changes the text delivered on the next refresh; choose option 6 again to fetch it immediately. Keep the response as plain text—many SSH clients show it in their logs and may display ANSI color codes literally.
+To customize it, edit the `banner` constant in `worker/success-worker.js` and redeploy that Worker. On a fresh install, the installer fetches the banner automatically. On an existing server, open `sshvpn`, choose option **6**, and press Enter to fetch the current Worker message again. Keep the response as plain text—many SSH clients show it in their logs and may display ANSI color codes literally.
 
 ## GitHub updates
 
-The optional updater expects the project to be hosted on GitHub. Set the repository as `owner/repository` in the panel when prompted. The scheduled check runs daily at 03:00 server time; updates are copied into `/etc/ssh-vpn-panel`.
+The updater is preconfigured for `PlanAslii/sstieq`. The scheduled check runs daily at 03:00 server time; updates are copied into `/etc/ssh-vpn-panel`.
 
 ## Logs and configuration
 

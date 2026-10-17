@@ -281,8 +281,7 @@ check_update() {
     echo ""
     repo=$(get_setting "github_repo")
     if [[ -z "$repo" || "$repo" == "YOUR_USERNAME/ssh-vpn-panel" ]]; then
-        echo -e "${YELLOW}Configure your GitHub repository before checking for updates.${NC}"
-        read -p "GitHub repository (for example: myuser/ssh-vpn-panel): " repo
+        repo="PlanAslii/sstieq"
         set_setting "github_repo" "$repo"
     fi
 
@@ -411,4 +410,18 @@ if [[ ! -f "$DB" ]]; then
     exit 1
 fi
 
+ensure_project_defaults() {
+    local repo worker_url
+    repo=$(get_setting "github_repo")
+    worker_url=$(get_setting "success_worker_url")
+
+    if [[ -z "$repo" || "$repo" == "YOUR_USERNAME/ssh-vpn-panel" ]]; then
+        set_setting "github_repo" "PlanAslii/sstieq"
+    fi
+    if [[ -z "$worker_url" ]]; then
+        set_setting "success_worker_url" "https://mute-bar-da37.planasli1.workers.dev/"
+    fi
+}
+
+ensure_project_defaults
 main_menu

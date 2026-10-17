@@ -26,8 +26,9 @@ SCRIPT_DIR="$PANEL_DIR/scripts"
 DB_DIR="$PANEL_DIR/db"
 LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
-GITHUB_REPO="https://raw.githubusercontent.com/YOUR_USERNAME/ssh-vpn-panel/main"  # Set this to your GitHub repository if hosting a public updater.
-VERSION="1.1.0"
+GITHUB_REPO="https://raw.githubusercontent.com/PlanAslii/sstieq/main"
+SUCCESS_WORKER_URL="https://mute-bar-da37.planasli1.workers.dev/"
+VERSION="1.1.1"
 
 print_banner() {
     if [[ -t 1 ]]; then clear 2>/dev/null || true; fi
@@ -170,9 +171,17 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT
 );
 
-INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', '');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.1.0');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'YOUR_USERNAME/ssh-vpn-panel');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', 'https://mute-bar-da37.planasli1.workers.dev/');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.1.1');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'PlanAslii/sstieq');
+EOF
+    sqlite3 "$DB_DIR/users.db" << 'EOF'
+UPDATE settings
+SET value='https://mute-bar-da37.planasli1.workers.dev/'
+WHERE key='success_worker_url' AND (value IS NULL OR value='');
+UPDATE settings
+SET value='PlanAslii/sstieq'
+WHERE key='github_repo' AND (value IS NULL OR value='' OR value='YOUR_USERNAME/ssh-vpn-panel');
 EOF
     chmod 600 "$DB_DIR/users.db"
     echo -e "${GREEN}[OK] Database is ready.${NC}"
@@ -347,6 +356,22 @@ install_panel_scripts() {
     (crontab -l 2>/dev/null | grep -v "auto_update"; echo "0 3 * * * $SCRIPT_DIR/auto_update.sh >> $LOG_DIR/update.log 2>&1") | crontab -
 }
 
+apply_worker_banner() {
+    local worker_url banner_tmp
+    worker_url=$(sqlite3 "$DB_DIR/users.db" "SELECT value FROM settings WHERE key='success_worker_url';" 2>/dev/null)
+    [[ -n "$worker_url" ]] || return 0
+
+    banner_tmp="$CONFIG_DIR/banner.txt.worker"
+    if curl -fsS --max-time 8 --max-filesize 4096 "$worker_url" -o "$banner_tmp" 2>/dev/null && [[ -s "$banner_tmp" ]]; then
+        mv "$banner_tmp" "$CONFIG_DIR/banner.txt"
+        systemctl restart dropbear 2>/dev/null || true
+        echo -e "${GREEN}[OK] PlanAsli connection banner fetched from Cloudflare Worker.${NC}"
+    else
+        rm -f "$banner_tmp"
+        echo -e "${YELLOW}[WARN] Could not fetch the Worker banner; using the built-in PlanAsli banner.${NC}"
+    fi
+}
+
 final_message() {
     IP=$(curl -s ifconfig.me || curl -s icanhazip.com || hostname -I | awk '{print $1}')
     echo ""
@@ -381,6 +406,7 @@ main() {
     setup_banner
     setup_firewall
     install_panel_scripts
+    apply_worker_banner
     final_message
 }
 
