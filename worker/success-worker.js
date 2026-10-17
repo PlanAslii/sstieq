@@ -1,40 +1,32 @@
 /**
- * Cloudflare Worker مثال برای پیام موفقیت اتصال
- * 
- * نحوه استفاده:
- * 1. این کد را در Cloudflare Workers بسازید
- * 2. آدرس Worker را در منوی پنل (گزینه ۶) وارد کنید
- * 3. هر بار که کاربر با موفقیت وصل شود، بنر Dropbear از این آدرس آپدیت می‌شود
- * 
- * می‌توانید پیام را هر طور دوست دارید تغییر دهید.
+ * Cloudflare Worker — SSH VPN connection banner
+ *
+ * Deploy this file as a Cloudflare Worker, then paste its URL into
+ * SSH VPN Panel > option 6. Edit the text in `banner` below to rebrand
+ * the connection message; no server-side code changes are needed.
+ *
+ * Keep this response as plain text. Many SSH clients show server banners
+ * in their connection log and do not render ANSI terminal color codes.
  */
+const banner = `
+╭──────────────────────────────────────────────────────────╮
+│                 ✨  YOU'RE CONNECTED  ✨                 │
+├──────────────────────────────────────────────────────────┤
+│  🚀  SSH VPN  ·  SECURE TUNNEL                           │
+│  🟢  STATUS: ONLINE                                      │
+│                                                          │
+│  Your connection is ready. Enjoy a smooth session.      │
+│  Need help? Contact: @YourSupport                        │
+╰──────────────────────────────────────────────────────────╯
+`.trim();
 
 export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    
-    // می‌توانید بر اساس پارامترها پیام‌های مختلف بدهید
-    // مثلاً ?lang=fa یا ?user=xxx
-
-    const message = `
-╔══════════════════════════════════════════════════════╗
-║                                                      ║
-║          ✨ اتصال موفقیت‌آمیز بود! ✨                 ║
-║                                                      ║
-║     🚀 SSH-VPN Panel - High Speed Connection         ║
-║                                                      ║
-║   از سرعت و پایداری لذت ببرید.                       ║
-║   Enjoy your high-speed secure connection.           ║
-║                                                      ║
-║   Support: @YourTelegram | GitHub Updates            ║
-║                                                      ║
-╚══════════════════════════════════════════════════════╝
-`;
-
-    return new Response(message.trim(), {
+  async fetch() {
+    return new Response(`${banner}\n`, {
       headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'no-cache',
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store, max-age=0",
+        "X-Content-Type-Options": "nosniff",
       },
     });
   },

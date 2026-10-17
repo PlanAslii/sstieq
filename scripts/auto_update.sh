@@ -20,7 +20,7 @@ fi
 
 log "Checking update from github.com/$repo ..."
 
-# دانلود نسخه
+# Fetch the published version.
 remote_ver=$(curl -sL "https://raw.githubusercontent.com/$repo/main/VERSION" 2>/dev/null | tr -d '\r\n')
 local_ver=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='panel_version';")
 
@@ -40,7 +40,7 @@ rm -rf "$TMP"
 mkdir -p "$TMP"
 cd "$TMP"
 
-# دانلود zip از GitHub
+# Download the GitHub source archive.
 curl -sL "https://github.com/$repo/archive/refs/heads/main.zip" -o update.zip
 if [[ ! -f update.zip ]]; then
     log "ERROR: Download failed."
@@ -55,21 +55,21 @@ if [[ -z "$folder" ]]; then
     exit 1
 fi
 
-# بکاپ اسکریپت‌های فعلی
+# Back up the installed scripts.
 cp -r "$SCRIPT_DIR" "$SCRIPT_DIR.bak.$(date +%s)" 2>/dev/null || true
 
-# کپی فایل‌های جدید
+# Install updated scripts and configuration.
 cp -r "$folder/scripts/"* "$SCRIPT_DIR/" 2>/dev/null || true
 cp -r "$folder/config/"* "$PANEL_DIR/config/" 2>/dev/null || true
 cp -r "$folder/worker/"* "$PANEL_DIR/worker/" 2>/dev/null || true
 
 chmod +x "$SCRIPT_DIR"/*.sh
 
-# آپدیت نسخه در دیتابیس
+# Store the new panel version.
 sqlite3 "$DB" "UPDATE settings SET value='$remote_ver' WHERE key='panel_version';"
 
 log "Update to v$remote_ver completed successfully."
 rm -rf "$TMP"
 
-# ریستارت سرویس‌های ضروری (اختیاری)
+# Restart essential services if required.
 # systemctl restart dropbear

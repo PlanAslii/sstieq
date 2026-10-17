@@ -3,39 +3,46 @@
 # SSH-VPN Panel - Auto Installer
 # Protocol: SSH / Dropbear + Stunnel + Squid + BadVPN
 # Features: BBR, Multi-port, User Management, Bandwidth, Auto-Update
-# Compatible with Ubuntu 20.04 / 22.04 / Debian 11+
+# Supported: Ubuntu 20.04, 22.04, 24.04, 26.04; Debian 11, 12, 13
 # ============================================================
 
 set -e
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    RED='\033[1;31m'
+    GREEN='\033[1;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[1;34m'
+    CYAN='\033[1;36m'
+    PURPLE='\033[1;35m'
+    BOLD='\033[1m'
+    NC='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' PURPLE='' BOLD='' NC=''
+fi
 
 PANEL_DIR="/etc/ssh-vpn-panel"
 SCRIPT_DIR="$PANEL_DIR/scripts"
 DB_DIR="$PANEL_DIR/db"
 LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
-GITHUB_REPO="https://raw.githubusercontent.com/YOUR_USERNAME/ssh-vpn-panel/main"  # تغییر بده به ریپوی خودت
-VERSION="1.0.0"
+GITHUB_REPO="https://raw.githubusercontent.com/YOUR_USERNAME/ssh-vpn-panel/main"  # Set this to your GitHub repository if hosting a public updater.
+VERSION="1.1.0"
 
 print_banner() {
-    clear
-    echo -e "${CYAN}"
-    echo "╔══════════════════════════════════════════════════════════╗"
-    echo "║          SSH-VPN Panel Installer v${VERSION}               ║"
-    echo "║     Dropbear + Stunnel + Squid + BadVPN + BBR            ║"
-    echo "╚══════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
+    if [[ -t 1 ]]; then clear 2>/dev/null || true; fi
+    printf '\n%b' "$CYAN"
+    printf '╭──────────────────────────────────────────────────────────╮\n'
+    printf '│             ✦  SSH VPN PANEL  ·  INSTALLER  ✦            │\n'
+    printf '│                    Release v%-8s                       │\n' "$VERSION"
+    printf '│      Dropbear  ·  Stunnel  ·  Squid  ·  BadVPN           │\n'
+    printf '╰──────────────────────────────────────────────────────────╯\n'
+    printf '%b\n' "$NC"
 }
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        echo -e "${RED}[ERROR] این اسکریپت باید با دسترسی root اجرا شود!${NC}"
+        echo -e "${RED}[ERROR] Run this installer as root (for example: sudo -i).${NC}"
         exit 1
     fi
 }
@@ -46,14 +53,23 @@ detect_os() {
         OS=$ID
         VER=$VERSION_ID
     else
-        echo -e "${RED}[ERROR] سیستم‌عامل پشتیبانی نمی‌شود.${NC}"
+        echo -e "${RED}[ERROR] Cannot identify the operating system from /etc/os-release.${NC}"
         exit 1
     fi
-    echo -e "${GREEN}[INFO] سیستم‌عامل: $OS $VER${NC}"
+    case "$OS:$VER" in
+        ubuntu:20.04|ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:11|debian:12|debian:13)
+            ;;
+        *)
+            echo -e "${RED}[ERROR] Unsupported OS: $OS $VER${NC}"
+            echo -e "${YELLOW}[INFO] Supported: Ubuntu 20.04/22.04/24.04/26.04 and Debian 11/12/13.${NC}"
+            exit 1
+            ;;
+    esac
+    echo -e "${GREEN}[INFO] Operating system: $PRETTY_NAME${NC}"
 }
 
 install_dependencies() {
-    echo -e "${YELLOW}[+] نصب وابستگی‌ها...${NC}"
+    echo -e "${YELLOW}[1/9] Installing system packages...${NC}"
     apt-get update -y
     apt-get install -y \
         dropbear \
@@ -78,12 +94,11 @@ install_dependencies() {
         openssl \
         dos2unix \
         bc \
-        cron \
-        2>/dev/null || true
+        cron
 
     # BadVPN UDPGW
     if ! command -v badvpn-udpgw &>/dev/null; then
-        echo -e "${YELLOW}[+] کامپایل و نصب BadVPN...${NC}"
+        echo -e "${YELLOW}[INFO] Building and installing BadVPN UDPGW...${NC}"
         cd /tmp
         wget -q https://github.com/ambrop72/badvpn/archive/master.zip -O badvpn.zip
         unzip -qo badvpn.zip
@@ -102,7 +117,7 @@ install_dependencies() {
 }
 
 enable_bbr() {
-    echo -e "${YELLOW}[+] فعال‌سازی BBR برای سرعت بالاتر...${NC}"
+    echo -e "${YELLOW}[2/9] Enabling BBR TCP congestion control...${NC}"
     cat > /etc/sysctl.d/99-bbr.conf << EOF
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
@@ -115,7 +130,7 @@ net.ipv4.tcp_rmem=4096 87380 16777216
 net.ipv4.tcp_wmem=4096 65536 16777216
 EOF
     sysctl --system > /dev/null 2>&1
-    echo -e "${GREEN}[✓] BBR فعال شد.${NC}"
+    echo -e "${GREEN}[OK] BBR configuration applied.${NC}"
 }
 
 setup_directories() {
@@ -126,7 +141,7 @@ setup_directories() {
 }
 
 setup_database() {
-    echo -e "${YELLOW}[+] راه‌اندازی دیتابیس SQLite...${NC}"
+    echo -e "${YELLOW}[3/9] Preparing the SQLite database...${NC}"
     sqlite3 "$DB_DIR/users.db" << 'EOF'
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,16 +171,16 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', '');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.0.0');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.1.0');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'YOUR_USERNAME/ssh-vpn-panel');
 EOF
     chmod 600 "$DB_DIR/users.db"
-    echo -e "${GREEN}[✓] دیتابیس آماده شد.${NC}"
+    echo -e "${GREEN}[OK] Database is ready.${NC}"
 }
 
 configure_dropbear() {
-    echo -e "${YELLOW}[+] پیکربندی Dropbear (پورت‌های چندگانه)...${NC}"
-    # پورت‌های اصلی: 143 (اصلی)، 444, 666, 5555, 701, 179
+    echo -e "${YELLOW}[4/9] Configuring Dropbear SSH ports...${NC}"
+    # Main SSH ports: 143, 444, 666, 5555, 701, 179
     cat > /etc/default/dropbear << EOF
 NO_START=0
 DROPBEAR_PORT=143
@@ -174,7 +189,7 @@ DROPBEAR_BANNER="/etc/ssh-vpn-panel/config/banner.txt"
 DROPBEAR_RECEIVE_WINDOW=65536
 EOF
 
-    # کلیدها
+    # Generate host keys if they do not already exist.
     if [[ ! -f /etc/dropbear/dropbear_rsa_host_key ]]; then
         dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
     fi
@@ -187,12 +202,12 @@ EOF
 
     systemctl enable dropbear
     systemctl restart dropbear
-    echo -e "${GREEN}[✓] Dropbear روی پورت‌های 143,444,666,5555,701,179 آماده شد.${NC}"
+    echo -e "${GREEN}[OK] Dropbear is listening on ports 143, 444, 666, 5555, 701, 179.${NC}"
 }
 
 configure_stunnel() {
-    echo -e "${YELLOW}[+] پیکربندی Stunnel (SSL ports)...${NC}"
-    # پورت‌های SSL: 110, 443, 587
+    echo -e "${YELLOW}[5/9] Configuring Stunnel TLS ports...${NC}"
+    # TLS ports: 110, 443, 587
     openssl req -new -x509 -days 3650 -nodes \
         -out /etc/stunnel/stunnel.pem \
         -keyout /etc/stunnel/stunnel.pem \
@@ -222,11 +237,11 @@ EOF
     sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4 2>/dev/null || true
     systemctl enable stunnel4
     systemctl restart stunnel4
-    echo -e "${GREEN}[✓] Stunnel SSL روی 110,443,587 آماده شد.${NC}"
+    echo -e "${GREEN}[OK] Stunnel is configured on ports 110, 443, 587.${NC}"
 }
 
 configure_squid() {
-    echo -e "${YELLOW}[+] پیکربندی Squid Proxy...${NC}"
+    echo -e "${YELLOW}[6/9] Configuring Squid proxy ports...${NC}"
     cat > /etc/squid/squid.conf << EOF
 http_port 8080
 http_port 8000
@@ -242,11 +257,11 @@ refresh_pattern .               0       20%     4320
 EOF
     systemctl enable squid
     systemctl restart squid
-    echo -e "${GREEN}[✓] Squid روی پورت‌های 8080,8000,3128 آماده شد.${NC}"
+    echo -e "${GREEN}[OK] Squid is configured on ports 8080, 8000, 3128.${NC}"
 }
 
 configure_badvpn() {
-    echo -e "${YELLOW}[+] راه‌اندازی BadVPN UDPGW روی پورت 7300...${NC}"
+    echo -e "${YELLOW}[7/9] Configuring BadVPN UDPGW on port 7300...${NC}"
     cat > /etc/systemd/system/badvpn.service << EOF
 [Unit]
 Description=BadVPN UDPGW
@@ -264,11 +279,11 @@ EOF
     systemctl daemon-reload
     systemctl enable badvpn
     systemctl restart badvpn
-    echo -e "${GREEN}[✓] BadVPN روی 7300 آماده شد.${NC}"
+    echo -e "${GREEN}[OK] BadVPN UDPGW is configured on port 7300.${NC}"
 }
 
 configure_sshd() {
-    # کمی تنظیمات امنیتی OpenSSH (اختیاری)
+    # Apply optional OpenSSH settings.
     sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
     sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
     systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
@@ -277,24 +292,25 @@ configure_sshd() {
 setup_banner() {
     cat > "$CONFIG_DIR/banner.txt" << 'EOF'
 
-╔══════════════════════════════════════════════════════╗
-║           🚀 SSH-VPN Panel Connected! 🚀             ║
-║                                                      ║
-║   اتصال موفقیت‌آمیز بود. از سرعت لذت ببرید!          ║
-║   Success! You are now connected securely.           ║
-║                                                      ║
-║   Support & Updates via GitHub                       ║
-╚══════════════════════════════════════════════════════╝
+╭──────────────────────────────────────────────────────╮
+│                 ✨  YOU'RE CONNECTED  ✨              │
+├──────────────────────────────────────────────────────┤
+│  🚀  SSH VPN  ·  SECURE TUNNEL                       │
+│  ●   STATUS: ONLINE                                  │
+│                                                      │
+│  Your connection is ready. Enjoy a smooth session.  │
+│  Help & updates: configure your support link.        │
+╰──────────────────────────────────────────────────────╯
 
 EOF
 }
 
 setup_firewall() {
-    echo -e "${YELLOW}[+] تنظیم فایروال...${NC}"
+    echo -e "${YELLOW}[8/9] Configuring the UFW firewall...${NC}"
     ufw --force reset
     ufw default deny incoming
     ufw default allow outgoing
-    # پورت‌های Dropbear
+    # Dropbear ports
     ufw allow 143/tcp
     ufw allow 444/tcp
     ufw allow 666/tcp
@@ -309,15 +325,15 @@ setup_firewall() {
     ufw allow 8080/tcp
     ufw allow 8000/tcp
     ufw allow 3128/tcp
-    # SSH اصلی سرور (برای مدیریت)
+    # Keep the default SSH port available for server administration.
     ufw allow 22/tcp
     ufw --force enable
-    echo -e "${GREEN}[✓] فایروال پیکربندی شد.${NC}"
+    echo -e "${GREEN}[OK] Firewall rules have been applied.${NC}"
 }
 
 install_panel_scripts() {
-    echo -e "${YELLOW}[+] نصب اسکریپت‌های پنل...${NC}"
-    # کپی فایل‌های اسکریپت از مسیر فعلی
+    echo -e "${YELLOW}[9/9] Installing panel scripts...${NC}"
+    # Copy project scripts and configuration into the system directory.
     cp -r scripts/* "$SCRIPT_DIR/" 2>/dev/null || true
     cp -r config/* "$CONFIG_DIR/" 2>/dev/null || true
     cp -r worker/* "$PANEL_DIR/worker/" 2>/dev/null || true
@@ -326,7 +342,7 @@ install_panel_scripts() {
     ln -sf "$SCRIPT_DIR/menu.sh" /usr/local/bin/sshvpn
     ln -sf "$SCRIPT_DIR/menu.sh" /usr/bin/sshvpn
 
-    # کرون برای چک کردن انقضا و آپدیت
+    # Schedule expiration checks and optional updates.
     (crontab -l 2>/dev/null | grep -v "ssh-vpn-panel"; echo "0 */6 * * * $SCRIPT_DIR/check_expire.sh >> $LOG_DIR/cron.log 2>&1") | crontab -
     (crontab -l 2>/dev/null | grep -v "auto_update"; echo "0 3 * * * $SCRIPT_DIR/auto_update.sh >> $LOG_DIR/update.log 2>&1") | crontab -
 }
@@ -334,21 +350,19 @@ install_panel_scripts() {
 final_message() {
     IP=$(curl -s ifconfig.me || curl -s icanhazip.com || hostname -I | awk '{print $1}')
     echo ""
-    echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║              نصب با موفقیت انجام شد!                     ║${NC}"
-    echo -e "${GREEN}╠══════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}  Host / IP          : ${YELLOW}$IP${NC}"
-    echo -e "${CYAN}  Dropbear Ports     : ${YELLOW}143, 444, 666, 5555, 701, 179${NC}"
-    echo -e "${CYAN}  Dropbear SSL       : ${YELLOW}110, 443, 587${NC}"
-    echo -e "${CYAN}  Squid Proxy        : ${YELLOW}8080, 8000, 3128${NC}"
-    echo -e "${CYAN}  BadVPN UDPGW       : ${YELLOW}7300${NC}"
-    echo -e "${CYAN}  Menu Command       : ${YELLOW}sshvpn${NC}"
-    echo -e "${GREEN}╠══════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${YELLOW}  برای مدیریت کاربران دستور زیر را بزنید:${NC}"
-    echo -e "${GREEN}      sshvpn${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${GREEN}╭──────────────────────────────────────────────────────────╮${NC}"
+    echo -e "${GREEN}│               ✓  INSTALLATION COMPLETE                  │${NC}"
+    echo -e "${GREEN}├──────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${CYAN}  Server IP        ${NC} ${YELLOW}$IP${NC}"
+    echo -e "${CYAN}  Dropbear SSH     ${NC} ${YELLOW}143, 444, 666, 5555, 701, 179${NC}"
+    echo -e "${CYAN}  Stunnel TLS      ${NC} ${YELLOW}110, 443, 587${NC}"
+    echo -e "${CYAN}  Squid Proxy      ${NC} ${YELLOW}8080, 8000, 3128${NC}"
+    echo -e "${CYAN}  BadVPN UDPGW     ${NC} ${YELLOW}7300${NC}"
+    echo -e "${GREEN}├──────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${CYAN}  Open the admin panel with: ${BOLD}${YELLOW}sshvpn${NC}"
+    echo -e "${GREEN}╰──────────────────────────────────────────────────────────╯${NC}"
     echo ""
-    echo -e "${BLUE}[NOTE] آدرس Worker موفقیت را در منوی تنظیمات وارد کنید.${NC}"
+    echo -e "${BLUE}[NEXT] Set your Cloudflare Worker URL from menu option 6.${NC}"
 }
 
 main() {
