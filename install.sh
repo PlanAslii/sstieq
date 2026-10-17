@@ -29,7 +29,7 @@ LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
 GITHUB_REPO="https://raw.githubusercontent.com/PlanAslii/sstieq/main"
 SUCCESS_WORKER_URL="https://mute-bar-da37.planasli1.workers.dev/"
-VERSION="1.1.2"
+VERSION="1.1.3"
 
 print_banner() {
     if [[ -t 1 ]]; then clear 2>/dev/null || true; fi
@@ -101,7 +101,6 @@ install_dependencies() {
         wget \
         jq \
         iptables \
-        iptables-persistent \
         python3 \
         python3-pip \
         git \
@@ -189,7 +188,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', 'https://mute-bar-da37.planasli1.workers.dev/');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.1.2');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.1.3');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'PlanAslii/sstieq');
 EOF
     sqlite3 "$DB_DIR/users.db" << 'EOF'
