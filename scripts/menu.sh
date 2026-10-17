@@ -67,6 +67,40 @@ ensure_vpn_shell_allowed() {
     fi
 }
 
+ensure_dropbear_banner_option() {
+    local config="/etc/default/dropbear"
+    local banner_flag="-b /etc/ssh-vpn-panel/config/banner.txt"
+    local changed=0
+    [[ $EUID -eq 0 && -f "$config" ]] || return 0
+
+    # Ubuntu's systemd unit passes DROPBEAR_EXTRA_ARGS directly; DROPBEAR_BANNER
+    # alone is not translated to Dropbear's -b option by that unit.
+    if grep -Fq -- "$banner_flag" "$config"; then
+        if grep -q '^DROPBEAR_BANNER=' "$config"; then
+            sed -i '/^DROPBEAR_BANNER=/d' "$config"
+            changed=1
+        fi
+    else
+        if grep -q '^DROPBEAR_EXTRA_ARGS="' "$config"; then
+            sed -i "s|^DROPBEAR_EXTRA_ARGS=\"|DROPBEAR_EXTRA_ARGS=\"$banner_flag |" "$config"
+        elif grep -q '^DROPBEAR_EXTRA_ARGS=' "$config"; then
+            sed -i "s|^DROPBEAR_EXTRA_ARGS=\\(.*\\)$|DROPBEAR_EXTRA_ARGS=\"$banner_flag \\1\"|" "$config"
+        else
+            printf 'DROPBEAR_EXTRA_ARGS="%s"\n' "$banner_flag" >> "$config"
+        fi
+        sed -i '/^DROPBEAR_BANNER=/d' "$config"
+        changed=1
+    fi
+
+    if [[ "$changed" -eq 1 ]]; then
+        if systemctl restart dropbear; then
+            log_msg "DROPBEAR_BANNER_COMPAT: enabled -b banner file option"
+        else
+            return 1
+        fi
+    fi
+}
+
 check_ssh_account_ready() {
     local username="$1" account_shell password_state
     account_shell=$(getent passwd "$username" | awk -F: '{print $7}')
@@ -515,4 +549,5 @@ ensure_project_defaults() {
 
 ensure_project_defaults
 ensure_vpn_shell_allowed
+ensure_dropbear_banner_option
 main_menu
