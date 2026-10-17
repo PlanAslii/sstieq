@@ -29,7 +29,8 @@ LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
 GITHUB_REPO="https://raw.githubusercontent.com/PlanAslii/sstieq/main"
 SUCCESS_WORKER_URL="https://mute-bar-da37.planasli1.workers.dev/"
-VERSION="1.1.3"
+VERSION="1.1.4"
+SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 print_banner() {
     if [[ -t 1 ]]; then clear 2>/dev/null || true; fi
@@ -152,6 +153,7 @@ EOF
 
 setup_directories() {
     mkdir -p "$PANEL_DIR" "$SCRIPT_DIR" "$DB_DIR" "$LOG_DIR" "$CONFIG_DIR"
+    mkdir -p "$PANEL_DIR/worker"
     mkdir -p /etc/dropbear
     touch "$LOG_DIR/panel.log"
     touch "$LOG_DIR/auth.log"
@@ -188,7 +190,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', 'https://mute-bar-da37.planasli1.workers.dev/');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.1.3');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.1.4');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'PlanAslii/sstieq');
 EOF
     sqlite3 "$DB_DIR/users.db" << 'EOF'
@@ -358,11 +360,25 @@ setup_firewall() {
 
 install_panel_scripts() {
     echo -e "${YELLOW}[9/9] Installing panel scripts...${NC}"
-    # Copy project scripts and configuration into the system directory.
-    cp -r scripts/* "$SCRIPT_DIR/" 2>/dev/null || true
-    cp -r config/* "$CONFIG_DIR/" 2>/dev/null || true
-    cp -r worker/* "$PANEL_DIR/worker/" 2>/dev/null || true
+    if [[ ! -f "$SOURCE_DIR/scripts/menu.sh" ]]; then
+        echo -e "${RED}[ERROR] Panel scripts were not found beside install.sh.${NC}"
+        echo -e "${YELLOW}[HELP] Run install.sh from the complete project folder containing scripts/, config/, and worker/.${NC}"
+        exit 1
+    fi
 
+    # Use the installer's own directory, independent of the shell's current directory.
+    cp -a "$SOURCE_DIR/scripts/." "$SCRIPT_DIR/"
+    if [[ -d "$SOURCE_DIR/config" ]]; then
+        cp -a "$SOURCE_DIR/config/." "$CONFIG_DIR/"
+    fi
+    if [[ -d "$SOURCE_DIR/worker" ]]; then
+        cp -a "$SOURCE_DIR/worker/." "$PANEL_DIR/worker/"
+    fi
+
+    if ! compgen -G "$SCRIPT_DIR/*.sh" >/dev/null; then
+        echo -e "${RED}[ERROR] No panel shell scripts were installed.${NC}"
+        exit 1
+    fi
     chmod +x "$SCRIPT_DIR"/*.sh
     ln -sf "$SCRIPT_DIR/menu.sh" /usr/local/bin/sshvpn
     ln -sf "$SCRIPT_DIR/menu.sh" /usr/bin/sshvpn

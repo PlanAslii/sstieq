@@ -1,4 +1,4 @@
-# SSH VPN Panel v1.1.3
+# SSH VPN Panel v1.1.4
 
 A colorful, English-language terminal panel for managing SSH accounts with Dropbear, Stunnel, Squid, and BadVPN UDPGW. The login banner can be customized independently through a Cloudflare Worker.
 
