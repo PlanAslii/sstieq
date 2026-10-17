@@ -29,7 +29,7 @@ LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
 GITHUB_REPO="https://raw.githubusercontent.com/PlanAslii/sstieq/main"
 SUCCESS_WORKER_URL="https://mute-bar-da37.planasli1.workers.dev/"
-VERSION="1.2.0"
+VERSION="1.2.1"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 print_banner() {
@@ -190,7 +190,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', 'https://mute-bar-da37.planasli1.workers.dev/');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.2.0');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.2.1');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'PlanAslii/sstieq');
 EOF
     sqlite3 "$DB_DIR/users.db" << 'EOF'
@@ -201,7 +201,7 @@ UPDATE settings
 SET value='PlanAslii/sstieq'
 WHERE key='github_repo' AND (value IS NULL OR value='' OR value='YOUR_USERNAME/ssh-vpn-panel');
 UPDATE settings
-SET value='1.2.0'
+SET value='1.2.1'
 WHERE key='panel_version';
 EOF
     chmod 600 "$DB_DIR/users.db"

@@ -8,6 +8,7 @@ DB_DIR="$PANEL_DIR/db"
 LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
 DB="$DB_DIR/users.db"
+DROPBEAR_SHELL_FIX_APPLIED=0
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     RED='\033[1;31m'
@@ -52,11 +53,28 @@ log_msg() {
 
 ensure_vpn_shell_allowed() {
     local vpn_shell="/bin/false"
-    [[ $EUID -eq 0 && -x "$vpn_shell" && -f /etc/shells ]] || return 0
+    [[ $EUID -eq 0 && -x "$vpn_shell" && -f /etc/shells ]] || return 1
     if ! grep -Fxq -- "$vpn_shell" /etc/shells; then
         printf '%s\n' "$vpn_shell" >> /etc/shells || return 1
+        DROPBEAR_SHELL_FIX_APPLIED=1
         log_msg "DROPBEAR_SHELL_COMPAT: registered /bin/false for non-interactive VPN accounts"
+        if systemctl is-active --quiet dropbear; then
+            systemctl restart dropbear || return 1
+        fi
     fi
+    if ! systemctl is-active --quiet dropbear; then
+        systemctl enable --now dropbear || return 1
+    fi
+}
+
+check_ssh_account_ready() {
+    local username="$1" account_shell password_state
+    account_shell=$(getent passwd "$username" | awk -F: '{print $7}')
+    password_state=$(passwd -S "$username" 2>/dev/null | awk '{print $2}')
+    [[ -n "$account_shell" ]] || return 1
+    grep -Fxq -- "$account_shell" /etc/shells || return 1
+    [[ "$password_state" == "P" ]] || return 1
+    systemctl is-active --quiet dropbear
 }
 
 # ===================== User Management =====================
@@ -108,7 +126,12 @@ create_user() {
         sleep 2
         return
     }
-    echo "$username:$password" | chpasswd
+    if ! printf '%s:%s\n' "$username" "$password" | chpasswd; then
+        userdel -r "$username" 2>/dev/null || true
+        echo -e "${RED}Could not set the account password; account creation was rolled back.${NC}"
+        sleep 2
+        return
+    fi
 
     # Save the account record
     sqlite3 "$DB" "INSERT INTO users (username, password, expire_date, max_devices, bandwidth_limit_gb, note) 
@@ -136,6 +159,14 @@ create_user() {
     echo "│  Bandwidth      ${bw_limit} GB"
     echo "╰──────────────────────────────────────────────────────────╯"
     echo -e "${NC}"
+    if check_ssh_account_ready "$username"; then
+        echo -e "${GREEN}[AUTO-FIX] SSH setup is ready: valid shell, password set, and Dropbear active.${NC}"
+        echo -e "${CYAN}[CLIENT] Use this exact username/password with SSH port 143.${NC}"
+        log_msg "USER_CREATE_AUTH_CHECK: $username | status=ready | shell_fix=$DROPBEAR_SHELL_FIX_APPLIED"
+    else
+        echo -e "${RED}[AUTO-CHECK] The account was created, but one SSH readiness check failed. Review the service/account status.${NC}"
+        log_msg "USER_CREATE_AUTH_CHECK: $username | status=failed"
+    fi
     log_msg "USER_CREATE: $username | expire: $expire_date | devices: $max_dev"
     echo ""
     read -p "Press Enter to return..."

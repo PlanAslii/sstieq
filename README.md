@@ -1,4 +1,4 @@
-# SSH VPN Panel v1.2.0
+# SSH VPN Panel v1.2.1
 
 A colorful, English-language terminal panel for managing SSH accounts with Dropbear, Stunnel, Squid, and BadVPN UDPGW. The login banner can be customized independently through a Cloudflare Worker.
 
@@ -11,6 +11,7 @@ A colorful, English-language terminal panel for managing SSH accounts with Dropb
 - SQLite storage for accounts, settings, and connection history.
 - PlanAsli-branded Cloudflare Worker login banner, preconfigured for the supplied Worker URL.
 - Automatic Dropbear compatibility for panel accounts using the non-interactive `/bin/false` shell.
+- Automatic post-create SSH readiness check with an admin-facing repair/status message.
 - In-panel password reset with a generated password (menu option 11).
 - Dropbear SSH: `143, 444, 666, 5555, 701, 179`.
 - Stunnel TLS: `110, 443, 587`.
