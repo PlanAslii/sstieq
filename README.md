@@ -1,4 +1,4 @@
-# SSH VPN Panel v1.1.1
+# SSH VPN Panel v1.1.2
 
 A colorful, English-language terminal panel for managing SSH accounts with Dropbear, Stunnel, Squid, and BadVPN UDPGW. The login banner can be customized independently through a Cloudflare Worker.
 
@@ -19,10 +19,10 @@ A colorful, English-language terminal panel for managing SSH accounts with Dropb
 ## Requirements
 
 - Root access on a clean Ubuntu or Debian server.
-- Installer OS check accepts Ubuntu `20.04`, `22.04`, `24.04`, `26.04` and Debian `11`, `12`, `13`.
+- The installer accepts any Ubuntu release and Debian `11`, `12`, or `13`; package installation requires working APT sources that match the installed OS.
 - At least 1 GB RAM and 10 GB disk space recommended.
 
-Ubuntu 26.04 has been added to the installer's OS allowlist, but the installation has not been exercised on a live 26.04 server. Test first on a fresh VPS or snapshot and confirm the required packages are available in that image's configured repositories.
+Ubuntu `20.04`, `22.04`, `24.04`, and `26.04` are the installer's targeted releases. Other Ubuntu releases are attempted with a compatibility warning, but are not guaranteed; end-of-life releases may require archive repositories or Ubuntu Pro. The installer does not rewrite APT sources. Keep all enabled Ubuntu repositories on the same codename as `/etc/os-release`.
 
 ## Install
 

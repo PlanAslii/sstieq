@@ -3,7 +3,8 @@
 # SSH-VPN Panel - Auto Installer
 # Protocol: SSH / Dropbear + Stunnel + Squid + BadVPN
 # Features: BBR, Multi-port, User Management, Bandwidth, Auto-Update
-# Supported: Ubuntu 20.04, 22.04, 24.04, 26.04; Debian 11, 12, 13
+# Targets Ubuntu LTS 20.04/22.04/24.04/26.04; accepts Ubuntu with working APT sources
+# Debian 11/12/13 are also supported
 # ============================================================
 
 set -e
@@ -28,7 +29,7 @@ LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
 GITHUB_REPO="https://raw.githubusercontent.com/PlanAslii/sstieq/main"
 SUCCESS_WORKER_URL="https://mute-bar-da37.planasli1.workers.dev/"
-VERSION="1.1.1"
+VERSION="1.1.2"
 
 print_banner() {
     if [[ -t 1 ]]; then clear 2>/dev/null || true; fi
@@ -57,12 +58,23 @@ detect_os() {
         echo -e "${RED}[ERROR] Cannot identify the operating system from /etc/os-release.${NC}"
         exit 1
     fi
-    case "$OS:$VER" in
-        ubuntu:20.04|ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:11|debian:12|debian:13)
+    case "$OS" in
+        ubuntu)
+            echo -e "${GREEN}[INFO] Ubuntu $VER detected. The installer will use the configured APT repositories.${NC}"
+            case "$VER" in
+                20.04|22.04|24.04|26.04) ;;
+                *) echo -e "${YELLOW}[WARN] Ubuntu $VER is not in the tested release set; package availability depends on its repositories.${NC}" ;;
+            esac
+            ;;
+        debian)
+            case "$VER" in
+                11|12|13) echo -e "${GREEN}[INFO] Debian $VER detected.${NC}" ;;
+                *) echo -e "${RED}[ERROR] Supported Debian releases are 11, 12, and 13 (found $VER).${NC}"; exit 1 ;;
+            esac
             ;;
         *)
-            echo -e "${RED}[ERROR] Unsupported OS: $OS $VER${NC}"
-            echo -e "${YELLOW}[INFO] Supported: Ubuntu 20.04/22.04/24.04/26.04 and Debian 11/12/13.${NC}"
+            echo -e "${RED}[ERROR] Unsupported operating system: $PRETTY_NAME${NC}"
+            echo -e "${YELLOW}[INFO] Use Ubuntu (any release with working repositories) or Debian 11/12/13.${NC}"
             exit 1
             ;;
     esac
@@ -71,7 +83,12 @@ detect_os() {
 
 install_dependencies() {
     echo -e "${YELLOW}[1/9] Installing system packages...${NC}"
-    apt-get update -y
+    if ! apt-get update -y; then
+        echo -e "${RED}[ERROR] APT could not refresh package indexes. No panel packages were installed.${NC}"
+        echo -e "${YELLOW}[HELP] Check /etc/apt/sources.list and /etc/apt/sources.list.d for stale Ubuntu codenames or unsupported PPAs.${NC}"
+        echo -e "${YELLOW}[HELP] Ubuntu repositories must match this OS release; the installer does not rewrite APT sources.${NC}"
+        exit 1
+    fi
     apt-get install -y \
         dropbear \
         stunnel4 \
@@ -172,7 +189,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', 'https://mute-bar-da37.planasli1.workers.dev/');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.1.1');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.1.2');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'PlanAslii/sstieq');
 EOF
     sqlite3 "$DB_DIR/users.db" << 'EOF'
