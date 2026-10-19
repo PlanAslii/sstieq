@@ -1,0 +1,11 @@
+[Unit]
+Description=Sample SSH account traffic once per minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=sshvpn-traffic-sampler.service
+
+[Install]
+WantedBy=timers.target

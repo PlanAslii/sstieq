@@ -62,8 +62,18 @@ cp -r "$SCRIPT_DIR" "$SCRIPT_DIR.bak.$(date +%s)" 2>/dev/null || true
 cp -r "$folder/scripts/"* "$SCRIPT_DIR/" 2>/dev/null || true
 cp -r "$folder/config/"* "$PANEL_DIR/config/" 2>/dev/null || true
 cp -r "$folder/worker/"* "$PANEL_DIR/worker/" 2>/dev/null || true
+if [[ -d "$folder/systemd" ]]; then
+    cp -a "$folder/systemd/"*.service "$folder/systemd/"*.timer /etc/systemd/system/ 2>/dev/null || true
+    systemctl daemon-reload
+    systemctl enable --now sshvpn-banner-refresh.timer sshvpn-traffic-sampler.timer
+    if [[ -s "$PANEL_DIR/config/telegram.env" ]]; then
+        systemctl enable --now sshvpn-telegram-bot.service || true
+    fi
+fi
 
+sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS user_traffic (username TEXT PRIMARY KEY, bytes_total INTEGER NOT NULL DEFAULT 0, last_counter INTEGER NOT NULL DEFAULT 0, last_sample TEXT);"
 chmod +x "$SCRIPT_DIR"/*.sh
+chmod +x "$SCRIPT_DIR"/*.py 2>/dev/null || true
 
 # Store the new panel version.
 sqlite3 "$DB" "UPDATE settings SET value='$remote_ver' WHERE key='panel_version';"

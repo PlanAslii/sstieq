@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh SSH VPN login banner from Cloudflare Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/etc/ssh-vpn-panel/scripts/refresh_banner.sh

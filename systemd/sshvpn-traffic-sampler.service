@@ -1,0 +1,7 @@
+[Unit]
+Description=Sample per-account SSH outbound traffic counters
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /etc/ssh-vpn-panel/scripts/traffic_sampler.py

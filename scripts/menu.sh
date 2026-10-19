@@ -43,8 +43,17 @@ get_setting() {
     sqlite3 "$DB" "SELECT value FROM settings WHERE key='$1';" 2>/dev/null
 }
 
+sql_escape() {
+    local value="$1"
+    value=${value//\'/\'\'}
+    printf '%s' "$value"
+}
+
 set_setting() {
-    sqlite3 "$DB" "INSERT OR REPLACE INTO settings (key, value) VALUES ('$1', '$2');"
+    local key value
+    key=$(sql_escape "$1")
+    value=$(sql_escape "$2")
+    sqlite3 "$DB" "INSERT OR REPLACE INTO settings (key, value) VALUES ('$key', '$value');"
 }
 
 log_msg() {
@@ -101,6 +110,19 @@ ensure_dropbear_banner_option() {
     fi
 }
 
+ensure_banner_refresh_schedule() {
+    [[ $EUID -eq 0 && -x "$SCRIPT_DIR/refresh_banner.sh" ]] || return 0
+    # Remove the previous five-minute cron polling entry and use systemd at five-second intervals.
+    (crontab -l 2>/dev/null | grep -Fv "$SCRIPT_DIR/refresh_banner.sh" || true) | crontab - 2>/dev/null || true
+    if [[ -f /etc/systemd/system/sshvpn-banner-refresh.timer ]]; then
+        systemctl daemon-reload
+        systemctl enable --now sshvpn-banner-refresh.timer 2>/dev/null || true
+    fi
+    if [[ -f /etc/systemd/system/sshvpn-traffic-sampler.timer ]]; then
+        systemctl enable --now sshvpn-traffic-sampler.timer 2>/dev/null || true
+    fi
+}
+
 check_ssh_account_ready() {
     local username="$1" account_shell password_state
     account_shell=$(getent passwd "$username" | awk -F: '{print $7}')
@@ -118,8 +140,8 @@ create_user() {
     print_title "CREATE NEW SSH ACCOUNT"
     echo ""
     read -p "Username: " username
-    if [[ -z "$username" ]]; then
-        echo -e "${RED}Username cannot be empty.${NC}"
+    if [[ ! "$username" =~ ^[a-zA-Z_][a-zA-Z0-9_.-]{0,31}$ ]]; then
+        echo -e "${RED}Invalid username. Use 1–32 letters, digits, dot, underscore, or hyphen; start with a letter or underscore.${NC}"
         sleep 2
         return
     fi
@@ -139,13 +161,16 @@ create_user() {
 
     read -p "Validity in days [30]: " days
     days=${days:-30}
+    if [[ ! "$days" =~ ^[0-9]+$ ]] || (( days < 1 || days > 3650 )); then echo -e "${RED}Validity must be from 1 to 3650 days.${NC}"; sleep 2; return; fi
     expire_date=$(date -d "+$days days" +%Y-%m-%d 2>/dev/null || date -v+${days}d +%Y-%m-%d)
 
     read -p "Maximum concurrent devices [1]: " max_dev
     max_dev=${max_dev:-1}
+    if [[ ! "$max_dev" =~ ^[0-9]+$ ]] || (( max_dev < 1 || max_dev > 100 )); then echo -e "${RED}Maximum devices must be from 1 to 100.${NC}"; sleep 2; return; fi
 
     read -p "Bandwidth limit in GB (0 = unlimited): " bw_limit
     bw_limit=${bw_limit:-0}
+    if [[ ! "$bw_limit" =~ ^[0-9]+([.][0-9]+)?$ ]]; then echo -e "${RED}Bandwidth limit must be a non-negative number.${NC}"; sleep 2; return; fi
 
     read -p "Note (optional): " note
 
@@ -167,9 +192,12 @@ create_user() {
         return
     fi
 
-    # Save the account record
-    sqlite3 "$DB" "INSERT INTO users (username, password, expire_date, max_devices, bandwidth_limit_gb, note) 
-                   VALUES ('$username', '$password', '$expire_date', $max_dev, $bw_limit, '$note');"
+    # Save the account record with SQL string values safely escaped.
+    username_sql=$(sql_escape "$username")
+    password_sql=$(sql_escape "$password")
+    note_sql=$(sql_escape "$note")
+    sqlite3 "$DB" "INSERT INTO users (username, password, expire_date, max_devices, bandwidth_limit_gb, note) VALUES ('$username_sql', '$password_sql', '$expire_date', $max_dev, $bw_limit, '$note_sql');"
+    /usr/bin/python3 "$SCRIPT_DIR/traffic_sampler.py" >/dev/null 2>&1 || true
 
     # Print connection details for SSH clients
     IP=$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
@@ -229,6 +257,11 @@ reset_user_password() {
         return
     }
 
+    if ! usermod -s /bin/false "$username"; then
+        echo -e "${RED}Could not repair the account shell.${NC}"
+        sleep 2
+        return
+    fi
     new_password=$(openssl rand -hex 10) || {
         echo -e "${RED}Could not generate a password.${NC}"
         sleep 2
@@ -239,8 +272,10 @@ reset_user_password() {
         sleep 2
         return
     fi
-    sqlite3 "$DB" "UPDATE users SET password='$new_password' WHERE username='$username';"
-    log_msg "PASSWORD_RESET: $username"
+    password_sql=$(sql_escape "$new_password")
+    sqlite3 "$DB" "UPDATE users SET password='$password_sql' WHERE username='$username';"
+    systemctl enable --now dropbear >/dev/null 2>&1 || true
+    log_msg "PASSWORD_RESET: $username | shell=/bin/false | password_set=1"
     echo ""
     echo -e "${GREEN}Password reset. Enter these credentials in your SSH client:${NC}"
     printf '%bUsername:%b %s\n' "$CYAN" "$NC" "$username"
@@ -257,6 +292,7 @@ delete_user() {
     echo ""
     read -p "Username to delete: " username
     if [[ -z "$username" ]]; then return; fi
+    if [[ ! "$username" =~ ^[a-zA-Z_][a-zA-Z0-9_.-]{0,31}$ ]]; then echo -e "${RED}Invalid username.${NC}"; sleep 2; return; fi
 
     exists=$(sqlite3 "$DB" "SELECT COUNT(*) FROM users WHERE username='$username';")
     if [[ "$exists" -eq 0 ]]; then
@@ -268,9 +304,11 @@ delete_user() {
     read -p "Delete this account? (y/N): " conf
     if [[ "$conf" != "y" && "$conf" != "Y" ]]; then return; fi
 
-    userdel -r "$username" 2>/dev/null || true
     pkill -u "$username" 2>/dev/null || true
+    /usr/bin/python3 "$SCRIPT_DIR/traffic_sampler.py" --remove-user "$username" >/dev/null 2>&1 || true
+    userdel -r "$username" 2>/dev/null || true
     sqlite3 "$DB" "DELETE FROM users WHERE username='$username';"
+    sqlite3 "$DB" "DELETE FROM user_traffic WHERE username='$username';"
     sqlite3 "$DB" "DELETE FROM connections WHERE username='$username';"
 
     echo -e "${GREEN}Account $username has been deleted.${NC}"
@@ -306,42 +344,33 @@ list_users_simple() {
 
 show_online() {
     clear_screen
-    print_title "LIVE CONNECTIONS"
+    print_title "LIVE SSH CONNECTIONS"
+    echo "Dropbear processes by panel account (best-effort session indicator):"
+    total=0
+    while IFS= read -r username; do
+        [[ -n "$username" ]] || continue
+        count=$(pgrep -u "$username" -x dropbear 2>/dev/null | wc -l)
+        if [[ "$count" -gt 0 ]]; then
+            printf "  %-24s %s process(es)\n" "$username" "$count"
+            total=$((total + 1))
+        fi
+    done < <(sqlite3 "$DB" "SELECT username FROM users WHERE is_active=1 ORDER BY username;")
     echo ""
-
-    # Use who and process information for SSH sessions
-    echo -e "${YELLOW}--- Active SSH sessions ---${NC}"
-    who 2>/dev/null | grep -v "root" || echo "No active non-root sessions found."
-
-    echo ""
-    echo -e "${YELLOW}--- SSH processes by account ---${NC}"
-    # Count SSH processes by account
-    ps aux | grep -E '[d]ropbear|[s]shd' | awk '{print $1}' | sort | uniq -c | sort -nr
-
-    echo ""
-    total=$(who 2>/dev/null | grep -v root | wc -l)
-    echo -e "${GREEN}Approximate logged-in users: $total${NC}"
+    echo -e "${GREEN}Accounts with a live Dropbear process: $total${NC}"
+    echo "(The daemon may represent multiple tunnel channels; this is not an exact device count.)"
     echo ""
     read -p "Press Enter to return..."
 }
 
 show_user_traffic() {
     clear_screen
-    print_title "TRAFFIC & CONNECTION HISTORY"
+    print_title "PER-ACCOUNT TRAFFIC"
+    echo "Measured outbound bytes from each account's Dropbear-owned sockets."
+    echo "Inbound bytes cannot reliably be attributed per SSH user by this method."
     echo ""
-    list_users_simple
+    sqlite3 -header -column "$DB" "SELECT u.username, printf('%.3f GB', COALESCE(t.bytes_total,0)/1073741824.0) AS outbound_estimate, u.bandwidth_limit_gb AS limit_gb FROM users u LEFT JOIN user_traffic t USING(username) ORDER BY u.username;"
     echo ""
-    read -p "Username: " username
-    if [[ -z "$username" ]]; then return; fi
-
-    # vnStat reports server-wide totals, not per-account usage
-    echo ""
-    echo -e "${YELLOW}Server-wide network statistics (vnStat):${NC}"
-    vnstat -i eth0 2>/dev/null || vnstat 2>/dev/null || echo "vnStat is unavailable or no network interface was detected."
-
-    echo ""
-    echo -e "${YELLOW}Recent connection history for $username:${NC}"
-    sqlite3 -header -column "$DB" "SELECT id, ip, connected_at, disconnected_at, bytes_sent, bytes_recv FROM connections WHERE username='$username' ORDER BY id DESC LIMIT 20;"
+    echo -e "${YELLOW}Note:${NC} counters begin when the sampler is installed and are best-effort outbound estimates, not total bidirectional usage."
     echo ""
     read -p "Press Enter to return..."
 }
@@ -395,6 +424,66 @@ EOF
     return 1
 }
 
+configure_telegram_bot() {
+    clear_screen
+    print_title "TELEGRAM ADMIN BOT"
+    echo "The bot accepts commands only from the configured numeric admin user ID."
+    echo "Create a bot with BotFather, then enter its token and your Telegram user ID."
+    echo ""
+    read -r -s -p "Bot token (or type DISABLE): " bot_token
+    echo ""
+    if [[ "$bot_token" == "DISABLE" ]]; then
+        systemctl disable --now sshvpn-telegram-bot.service 2>/dev/null || true
+        rm -f "$CONFIG_DIR/telegram.env"
+        echo -e "${YELLOW}Telegram bot disabled and token file removed.${NC}"
+        sleep 2
+        return
+    fi
+    if [[ ! "$bot_token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+        echo -e "${RED}Token format is not valid. Nothing was saved.${NC}"
+        sleep 3
+        return
+    fi
+    read -r -p "Your numeric Telegram admin ID: " admin_id
+    if [[ ! "$admin_id" =~ ^[0-9]{5,20}$ ]]; then
+        echo -e "${RED}Admin ID must be numeric. Nothing was saved.${NC}"
+        sleep 3
+        return
+    fi
+    echo "Validating the token with Telegram..."
+    bot_name=$(printf '%s' "$bot_token" | /usr/bin/python3 "$SCRIPT_DIR/telegram_bot.py" --validate-token-stdin 2>&1) || {
+        echo -e "${RED}Could not validate token: ${bot_name}${NC}"
+        echo "No token was saved. Check outbound HTTPS and the BotFather token."
+        sleep 4
+        return
+    }
+    umask 077
+    temp_config=$(mktemp "$CONFIG_DIR/telegram.env.XXXXXX")
+    printf 'BOT_TOKEN=%s\nADMIN_ID=%s\n' "$bot_token" "$admin_id" > "$temp_config"
+    chmod 600 "$temp_config"
+    mv -f "$temp_config" "$CONFIG_DIR/telegram.env"
+    unset bot_token
+    systemctl daemon-reload
+    if systemctl enable --now sshvpn-telegram-bot.service; then
+        echo -e "${GREEN}Bot @${bot_name} is running. Only Telegram ID ${admin_id} is authorized.${NC}"
+        echo "Open the bot and send /start."
+    else
+        echo -e "${RED}Bot configuration saved, but the service did not start. Check: journalctl -u sshvpn-telegram-bot -n 50${NC}"
+    fi
+    sleep 3
+}
+
+run_speed_test() {
+    clear_screen
+    print_title "SERVER SPEED TEST"
+    echo "BBR status: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unavailable)"
+    echo "Testing this server's internet path; this is not an individual phone speed measurement."
+    echo ""
+    "$SCRIPT_DIR/run_speedtest.sh" || echo -e "${RED}Speed test failed or timed out. Check server connectivity and try again.${NC}"
+    echo ""
+    read -p "Press Enter to return..."
+}
+
 # ===================== Auto Update =====================
 
 check_update() {
@@ -445,7 +534,9 @@ system_info() {
     ss -tlnp | grep -E ':(143|444|666|5555|701|179|110|443|587|8080|8000|3128|7300)\s' || netstat -tlnp 2>/dev/null | grep -E ':(143|444|...)\s'
     echo ""
     echo -e "${YELLOW}--- BBR Status ---${NC}"
-    sysctl net.ipv4.tcp_congestion_control
+    printf "Configured algorithm: "; sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unavailable
+    printf "Available algorithms: "; cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null || echo unavailable
+    printf "Queue discipline: "; tc qdisc show dev "$(ip route show default 2>/dev/null | awk 'NR==1{print $5}')" 2>/dev/null | head -1 || echo unavailable
     echo ""
     echo -e "${YELLOW}--- Resource usage ---${NC}"
     free -h | head -2
@@ -466,7 +557,7 @@ main_menu() {
         clear_screen
         IP=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || echo "N/A")
         ver=$(get_setting "panel_version")
-        online=$(who 2>/dev/null | grep -v root | wc -l)
+        online=$(sqlite3 "$DB" "SELECT username FROM users WHERE is_active=1;" | while IFS= read -r u; do pgrep -u "$u" -x dropbear >/dev/null 2>&1 && echo "$u"; done | wc -l)
         printf '\n%b' "$PURPLE"
         printf '╭──────────────────────────────────────────────────────────╮\n'
         printf '│       ✦  SSH VPN CONTROL PANEL  ·  v%-8s              │\n' "${ver:-unknown}"
@@ -488,6 +579,8 @@ main_menu() {
         echo -e "${GREEN}  9)${NC} ↻  Restart services"
         echo -e "${GREEN} 10)${NC} ◷  Extend account"
         echo -e "${GREEN} 11)${NC} 🔑 Reset account password"
+        echo -e "${GREEN} 12)${NC} 🤖 Configure Telegram admin bot"
+        echo -e "${GREEN} 13)${NC} 🚀 Run server speed test"
         echo ""
         echo -e "${RED}  0)${NC} ⏻  Exit"
         echo ""
@@ -512,7 +605,7 @@ main_menu() {
                 list_users_simple
                 read -p "Username to extend: " u
                 read -p "Number of days to add: " d
-                if [[ -n "$u" && -n "$d" ]]; then
+                if [[ -n "$u" && "$u" =~ ^[a-zA-Z_][a-zA-Z0-9_.-]{0,31}$ && "$d" =~ ^[0-9]+$ ]] && (( d >= 1 && d <= 3650 )); then
                     newexp=$(date -d "+$d days" +%Y-%m-%d)
                     sqlite3 "$DB" "UPDATE users SET expire_date='$newexp', is_active=1 WHERE username='$u';"
                     chage -E "$newexp" "$u" 2>/dev/null || true
@@ -522,6 +615,8 @@ main_menu() {
                 sleep 2
                 ;;
             11) reset_user_password ;;
+            12) configure_telegram_bot ;;
+            13) run_speed_test ;;
             0) exit 0 ;;
             *) echo -e "${RED}Invalid option.${NC}"; sleep 1 ;;
         esac
@@ -547,7 +642,9 @@ ensure_project_defaults() {
     fi
 }
 
+sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS user_traffic (username TEXT PRIMARY KEY, bytes_total INTEGER NOT NULL DEFAULT 0, last_counter INTEGER NOT NULL DEFAULT 0, last_sample TEXT);" 2>/dev/null || true
 ensure_project_defaults
 ensure_vpn_shell_allowed
 ensure_dropbear_banner_option
+ensure_banner_refresh_schedule
 main_menu

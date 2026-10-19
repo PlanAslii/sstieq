@@ -29,7 +29,7 @@ LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
 GITHUB_REPO="https://raw.githubusercontent.com/PlanAslii/sstieq/main"
 SUCCESS_WORKER_URL="https://mute-bar-da37.planasli1.workers.dev/"
-VERSION="1.2.2"
+VERSION="1.3.0"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 print_banner() {
@@ -114,6 +114,13 @@ install_dependencies() {
         bc \
         cron
 
+    # Optional distro-packaged speedtest client; do not fail panel install if unavailable.
+    if apt-cache show speedtest-cli >/dev/null 2>&1; then
+        apt-get install -y speedtest-cli || echo -e "${YELLOW}[WARN] speedtest-cli could not be installed; install it later with apt.${NC}"
+    else
+        echo -e "${YELLOW}[WARN] speedtest-cli is not available in these APT sources; the panel install will continue.${NC}"
+    fi
+
     # BadVPN UDPGW
     if ! command -v badvpn-udpgw &>/dev/null; then
         echo -e "${YELLOW}[INFO] Building and installing BadVPN UDPGW...${NC}"
@@ -147,8 +154,15 @@ net.core.wmem_max=16777216
 net.ipv4.tcp_rmem=4096 87380 16777216
 net.ipv4.tcp_wmem=4096 65536 16777216
 EOF
-    sysctl --system > /dev/null 2>&1
-    echo -e "${GREEN}[OK] BBR configuration applied.${NC}"
+    sysctl --system > /dev/null 2>&1 || true
+    local active available
+    active=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)
+    available=$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null || true)
+    if [[ "$active" == "bbr" ]]; then
+        echo -e "${GREEN}[OK] BBR is active on the running kernel.${NC}"
+    else
+        echo -e "${YELLOW}[WARN] BBR is not active (current: ${active:-unknown}; available: ${available:-unknown}). The tuning file is saved; a compatible kernel may be required.${NC}"
+    fi
 }
 
 setup_directories() {
@@ -189,8 +203,15 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS user_traffic (
+    username TEXT PRIMARY KEY,
+    bytes_total INTEGER NOT NULL DEFAULT 0,
+    last_counter INTEGER NOT NULL DEFAULT 0,
+    last_sample TEXT
+);
+
 INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', 'https://mute-bar-da37.planasli1.workers.dev/');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.2.2');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.3.0');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'PlanAslii/sstieq');
 EOF
     sqlite3 "$DB_DIR/users.db" << 'EOF'
@@ -201,7 +222,7 @@ UPDATE settings
 SET value='PlanAslii/sstieq'
 WHERE key='github_repo' AND (value IS NULL OR value='' OR value='YOUR_USERNAME/ssh-vpn-panel');
 UPDATE settings
-SET value='1.2.2'
+SET value='1.3.0'
 WHERE key='panel_version';
 EOF
     chmod 600 "$DB_DIR/users.db"
@@ -391,9 +412,21 @@ install_panel_scripts() {
     ln -sf "$SCRIPT_DIR/menu.sh" /usr/local/bin/sshvpn
     ln -sf "$SCRIPT_DIR/menu.sh" /usr/bin/sshvpn
 
+    # Install systemd services and timers for fast Worker refresh, traffic accounting and Telegram.
+    if [[ -d "$SOURCE_DIR/systemd" ]]; then
+        cp -a "$SOURCE_DIR/systemd/"*.service "$SOURCE_DIR/systemd/"*.timer /etc/systemd/system/ 2>/dev/null || true
+        systemctl daemon-reload
+        systemctl enable --now sshvpn-banner-refresh.timer sshvpn-traffic-sampler.timer
+    fi
+
     # Schedule expiration checks and optional updates.
     (crontab -l 2>/dev/null | grep -v "ssh-vpn-panel"; echo "0 */6 * * * $SCRIPT_DIR/check_expire.sh >> $LOG_DIR/cron.log 2>&1") | crontab -
     (crontab -l 2>/dev/null | grep -v "auto_update"; echo "0 3 * * * $SCRIPT_DIR/auto_update.sh >> $LOG_DIR/update.log 2>&1") | crontab -
+    (crontab -l 2>/dev/null | grep -v "refresh_banner.sh" || true) | crontab -
+    systemctl enable --now cron 2>/dev/null || true
+    if [[ -s "$CONFIG_DIR/telegram.env" ]]; then
+        systemctl enable --now sshvpn-telegram-bot.service || true
+    fi
 }
 
 apply_worker_banner() {
@@ -427,7 +460,7 @@ final_message() {
     echo -e "${CYAN}  Open the admin panel with: ${BOLD}${YELLOW}sshvpn${NC}"
     echo -e "${GREEN}╰──────────────────────────────────────────────────────────╯${NC}"
     echo ""
-    echo -e "${BLUE}[NEXT] Set your Cloudflare Worker URL from menu option 6.${NC}"
+    echo -e "${BLUE}[NEXT] Worker banner auto-refreshes every 5 seconds; configure Telegram from menu option 12.${NC}"
 }
 
 main() {

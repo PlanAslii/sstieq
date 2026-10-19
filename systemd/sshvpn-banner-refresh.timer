@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the configured Worker banner every five seconds
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=5s
+AccuracySec=1s
+Unit=sshvpn-banner-refresh.service
+
+[Install]
+WantedBy=timers.target
