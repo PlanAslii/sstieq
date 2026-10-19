@@ -66,15 +66,18 @@ log_msg() {
 # Prefer processes whose command contains "dropbear"; otherwise fall back to all user PIDs.
 count_user_sessions() {
     local username="$1"
-    local n=0
+    local n=0 d=0
     [[ -n "$username" ]] || { echo 0; return; }
-    n=$(ps -u "$username" -o comm= 2>/dev/null | grep -ciE 'dropbear|dbclient' || true)
-    if [[ "${n:-0}" -eq 0 ]]; then
-        n=$(pgrep -u "$username" 2>/dev/null | wc -l)
-        n=${n:-0}
+    d=$(ps -u "$username" -o comm= 2>/dev/null | grep -ciE 'dropbear|dbclient' || true)
+    n=$(pgrep -u "$username" 2>/dev/null | wc -l || true)
+    n=${n:-0}
+    d=${d:-0}
+    # Prefer dropbear-named processes; otherwise any PID owned by the account
+    if [[ "$d" -gt 0 ]]; then
+        echo "$d"
+    else
+        echo "$n" | tr -d '[:space:]'
     fi
-    # trim spaces
-    echo "$n" | tr -d '[:space:]'
 }
 
 ensure_vpn_shell_allowed() {

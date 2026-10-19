@@ -44,6 +44,18 @@ def remove_user(username, db):
     db.commit()
 
 
+def ensure_row(db, username, now):
+    """Always keep a traffic row so the panel can show Last sample even when counters fail."""
+    row = db.execute("SELECT 1 FROM user_traffic WHERE username=?", (username,)).fetchone()
+    if row is None:
+        db.execute(
+            "INSERT INTO user_traffic(username, bytes_total, last_counter, last_sample) VALUES (?, 0, 0, ?)",
+            (username, now),
+        )
+    else:
+        db.execute("UPDATE user_traffic SET last_sample=? WHERE username=?", (now, username))
+
+
 def sample(db):
     users = db.execute("SELECT username FROM users").fetchall()
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
@@ -53,42 +65,55 @@ def sample(db):
         try:
             uid = pwd.getpwnam(username).pw_uid
         except KeyError:
+            ensure_row(db, username, now)
             continue
         chain = chain_for(uid)
-        if run([IPTABLES, "-N", chain]).returncode != 0:
-            # Existing chain is expected; ensure it has a counting RETURN rule.
-            listing = run([IPTABLES, "-S", chain])
-            if listing.returncode != 0:
-                log(f"Cannot create/read accounting chain for {username}; iptables owner accounting unavailable")
-                continue
-        if run([IPTABLES, "-C", chain, "-j", "RETURN"]).returncode != 0:
-            if run([IPTABLES, "-A", chain, "-j", "RETURN"]).returncode != 0:
-                continue
-        jump = [IPTABLES, "-m", "owner", "--uid-owner", str(uid), "-j", chain]
-        if run([IPTABLES, "-C", "OUTPUT", *jump]).returncode != 0:
-            if run([IPTABLES, "-I", "OUTPUT", "1", *jump]).returncode != 0:
-                log(f"Cannot install output counter for {username}")
-                continue
-        listing = run([IPTABLES, "-nvx", "-L", chain])
-        if listing.returncode != 0:
-            continue
         counter = None
-        for line in listing.stdout.splitlines():
-            fields = line.split()
-            if len(fields) > 2 and fields[2] == "RETURN" and fields[1].isdigit():
-                counter = int(fields[1])
-                break
+        try:
+            if run([IPTABLES, "-N", chain]).returncode != 0:
+                listing = run([IPTABLES, "-S", chain])
+                if listing.returncode != 0:
+                    log(f"Cannot create/read accounting chain for {username}; iptables owner accounting unavailable")
+                    ensure_row(db, username, now)
+                    continue
+            if run([IPTABLES, "-C", chain, "-j", "RETURN"]).returncode != 0:
+                if run([IPTABLES, "-A", chain, "-j", "RETURN"]).returncode != 0:
+                    ensure_row(db, username, now)
+                    continue
+            jump = [IPTABLES, "-m", "owner", "--uid-owner", str(uid), "-j", chain]
+            if run([IPTABLES, "-C", "OUTPUT", *jump]).returncode != 0:
+                if run([IPTABLES, "-I", "OUTPUT", "1", *jump]).returncode != 0:
+                    log(f"Cannot install output counter for {username}")
+                    ensure_row(db, username, now)
+                    continue
+            listing = run([IPTABLES, "-nvx", "-L", chain])
+            if listing.returncode == 0:
+                for line in listing.stdout.splitlines():
+                    fields = line.split()
+                    if len(fields) > 2 and fields[2] == "RETURN" and fields[1].isdigit():
+                        counter = int(fields[1])
+                        break
+        except Exception as exc:
+            log(f"Sample error for {username}: {exc}")
+            ensure_row(db, username, now)
+            continue
+
         if counter is None:
+            ensure_row(db, username, now)
             continue
         row = db.execute("SELECT bytes_total, last_counter FROM user_traffic WHERE username=?", (username,)).fetchone()
         if row is None:
-            db.execute("INSERT INTO user_traffic(username, bytes_total, last_counter, last_sample) VALUES (?, ?, ?, ?)",
-                       (username, 0, counter, now))
+            db.execute(
+                "INSERT INTO user_traffic(username, bytes_total, last_counter, last_sample) VALUES (?, ?, ?, ?)",
+                (username, 0, counter, now),
+            )
         else:
             total, previous = row
             delta = counter - previous if counter >= previous else counter
-            db.execute("UPDATE user_traffic SET bytes_total=?, last_counter=?, last_sample=? WHERE username=?",
-                       (int(total) + int(delta), counter, now, username))
+            db.execute(
+                "UPDATE user_traffic SET bytes_total=?, last_counter=?, last_sample=? WHERE username=?",
+                (int(total) + int(delta), counter, now, username),
+            )
     db.commit()
 
 

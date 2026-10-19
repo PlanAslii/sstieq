@@ -122,13 +122,25 @@ def traffic_bytes(username):
     return int(row[0]) if row else 0
 
 
+def _uid_for(username):
+    try:
+        return pwd.getpwnam(username).pw_uid
+    except KeyError:
+        return None
+
+
 def connected_for(username):
     """Count live sessions for a panel account.
 
-    Dropbear process names vary (dropbear, dropbearmulti, path forms).
-    VPN accounts use /bin/false, so any process owned by the user is a session signal.
-    Prefer dropbear-like commands; fall back to total PID count for that UID.
+    Tries several methods because Dropbear process names and ownership vary by distro:
+    1) ps by user (dropbear-like names preferred)
+    2) pgrep by UID
+    3) scan /proc for matching Uid
+    4) ss ESTAB sockets owned by that UID (best-effort)
     """
+    uid = _uid_for(username)
+    counts = []
+
     try:
         result = subprocess.run(
             ["ps", "-u", username, "-o", "comm="],
@@ -138,15 +150,64 @@ def connected_for(username):
         )
         lines = [line.strip().lower() for line in result.stdout.splitlines() if line.strip()]
         dropbear_like = sum(1 for name in lines if "dropbear" in name or name == "dbclient")
-        if dropbear_like:
-            return dropbear_like
-        return len(lines)
+        counts.append(dropbear_like if dropbear_like else len(lines))
     except Exception:
+        pass
+
+    try:
+        result = subprocess.run(["pgrep", "-u", username], capture_output=True, text=True, timeout=5)
+        counts.append(len([line for line in result.stdout.splitlines() if line.strip()]))
+    except Exception:
+        pass
+
+    if uid is not None:
         try:
-            result = subprocess.run(["pgrep", "-u", username], capture_output=True, text=True, timeout=5)
-            return len([line for line in result.stdout.splitlines() if line.strip()])
+            n = 0
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{entry}/status", encoding="utf-8", errors="ignore") as stream:
+                        for line in stream:
+                            if line.startswith("Uid:"):
+                                if int(line.split()[1]) == uid:
+                                    n += 1
+                                break
+                except (OSError, ValueError, IndexError):
+                    continue
+            counts.append(n)
+        except OSError:
+            pass
+
+    if uid is not None:
+        try:
+            result = subprocess.run(
+                ["ss", "-tnpH", "state", "established"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            marker = f"uid:{uid}"
+            n = sum(1 for line in result.stdout.splitlines() if marker in line)
+            counts.append(n)
         except Exception:
-            return 0
+            pass
+
+    return max(counts) if counts else 0
+
+
+def force_traffic_sample():
+    """Run one traffic sampler pass so Last sample / Used GB update immediately."""
+    try:
+        subprocess.run(
+            ["/usr/bin/python3", f"{PANEL}/scripts/traffic_sampler.py"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=25,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def account_state(row):
@@ -163,6 +224,7 @@ def account_state(row):
 def user_keyboard(username, enabled):
     toggle_label = "⛔ Disable" if enabled else "✅ Enable"
     return [
+        [{"text": "🔄 Refresh", "callback_data": "refresh:" + username}],
         [{"text": "🔑 Reset pass", "callback_data": "pw:" + username}, {"text": "📅 Extend", "callback_data": "extendu:" + username}],
         [{"text": "📦 Set limit", "callback_data": "limit:" + username}, {"text": toggle_label, "callback_data": "toggle:" + username}],
         [{"text": "🗑 Delete", "callback_data": "del:" + username}, {"text": "👥 Accounts", "callback_data": "users"}],
@@ -205,7 +267,16 @@ def show_user(chat_id, username):
         online_label = f"🟢 {sessions} process(es)"
     else:
         online_label = "⚪ none"
-    sample_line = f"\n<b>Last sample:</b> {esc(last_sample)}" if last_sample else "\n<b>Last sample:</b> not yet (wait ~1 min after connect)"
+    if last_sample:
+        sample_line = f"\n<b>Last sample:</b> {esc(last_sample)}"
+    else:
+        sample_line = "\n<b>Last sample:</b> not yet — tap 🔄 Refresh or wait ~60s"
+    if not sessions:
+        sample_line += (
+            "\n<i>Tip: if you are online but see none, on the VPS run:\n"
+            f"<code>ps -u {esc(username)} -o pid,comm</code> and "
+            "<code>systemctl status sshvpn-traffic-sampler.timer</code></i>"
+        )
     text = (
         f"╭ <b>👤 {esc(username)}</b>\n"
         f"├ Status: {account_state(row)}\n"
@@ -721,10 +792,15 @@ def on_callback(query):
             send(chat_id, f"{'Access enabled' if enabled else 'Access disabled'} for <code>{esc(username)}</code>.", [[{"text": "Account details", "callback_data": "user:" + username}]])
         except Exception as exc:
             send(chat_id, "Could not change access: " + esc(exc))
+    elif data.startswith("refresh:"):
+        username = data[len("refresh:"):]
+        force_traffic_sample()
+        show_user(chat_id, username)
     elif data == "stats":
-        send(chat_id, stats_text(), [[{"text": "Refresh dashboard", "callback_data": "stats"}, {"text": "Menu", "callback_data": "home"}]])
+        force_traffic_sample()
+        send(chat_id, stats_text(), [[{"text": "🔄 Refresh", "callback_data": "stats"}, {"text": "🏠 Menu", "callback_data": "home"}]])
     elif data == "status":
-        send(chat_id, server_status_text(), [[{"text": "Refresh status", "callback_data": "status"}, {"text": "Menu", "callback_data": "home"}]])
+        send(chat_id, server_status_text(), [[{"text": "🔄 Refresh", "callback_data": "status"}, {"text": "🏠 Menu", "callback_data": "home"}]])
     elif data == "expiring":
         show_expiring(chat_id)
     elif data == "worker":
