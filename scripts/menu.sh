@@ -206,7 +206,7 @@ create_user() {
     clear_screen
     echo -e "${GREEN}"
     echo "╭──────────────────────────────────────────────────────────╮"
-    echo "│                 ✓  ACCOUNT CREATED                       │"
+    echo "│                  ACCOUNT CREATED                         │"
     echo "├──────────────────────────────────────────────────────────┤"
     echo "│  Username       $username"
     echo "│  Password       $password"
@@ -329,7 +329,7 @@ list_users() {
         else
             status="${GREEN}ACTIVE${NC}"
         fi
-        act_icon=$([ "$active" = "1" ] && echo "✓" || echo "✗")
+        act_icon=$([ "$active" = "1" ] && echo "YES" || echo "NO")
         printf "%-4s %-18s %-14s %-12s %-8s %-8s %-6s\n" "$id" "$user" "$exp" "$status" "$maxdev" "$bw" "$act_icon"
     done
     echo ""
@@ -524,9 +524,9 @@ system_info() {
     for svc in dropbear stunnel4 squid badvpn; do
         status=$(systemctl is-active $svc 2>/dev/null || echo "unknown")
         if [[ "$status" == "active" ]]; then
-            echo -e "  $svc : ${GREEN}● running${NC}"
+            echo -e "  $svc : ${GREEN}RUNNING${NC}"
         else
-            echo -e "  $svc : ${RED}● $status${NC}"
+            echo -e "  $svc : ${RED}$status${NC}"
         fi
     done
     echo ""
@@ -560,29 +560,29 @@ main_menu() {
         online=$(sqlite3 "$DB" "SELECT username FROM users WHERE is_active=1;" | while IFS= read -r u; do pgrep -u "$u" -x dropbear >/dev/null 2>&1 && echo "$u"; done | wc -l)
         printf '\n%b' "$PURPLE"
         printf '╭──────────────────────────────────────────────────────────╮\n'
-        printf '│       ✦  SSH VPN CONTROL PANEL  ·  v%-8s              │\n' "${ver:-unknown}"
+        printf '│       SSH VPN CONTROL PANEL  ·  v%-8s                  │\n' "${ver:-unknown}"
         printf '├──────────────────────────────────────────────────────────┤\n'
         printf '│  Server  %-18s  │  Online sessions  %-6s         │\n' "$IP" "$online"
         printf '╰──────────────────────────────────────────────────────────╯\n'
         printf '%b\n' "$NC"
         echo -e "${BLUE}${BOLD}  ACCOUNTS${NC}"
-        echo -e "${GREEN}  1)${NC} ✚  Create account"
-        echo -e "${GREEN}  2)${NC} ✕  Delete account"
-        echo -e "${GREEN}  3)${NC} ▤  List accounts"
+        echo -e "${GREEN}  1)${NC} Create account"
+        echo -e "${GREEN}  2)${NC} Delete account"
+        echo -e "${GREEN}  3)${NC} List accounts"
         echo ""
         echo -e "${BLUE}${BOLD}  MONITORING & SETTINGS${NC}"
-        echo -e "${GREEN}  4)${NC} ◉  Live connections"
-        echo -e "${GREEN}  5)${NC} ⇅  Traffic & history"
-        echo -e "${GREEN}  6)${NC} ✨  Connection banner (Worker)"
-        echo -e "${GREEN}  7)${NC} ⟳  Check for updates"
-        echo -e "${GREEN}  8)${NC} ◈  Server health"
-        echo -e "${GREEN}  9)${NC} ↻  Restart services"
-        echo -e "${GREEN} 10)${NC} ◷  Extend account"
-        echo -e "${GREEN} 11)${NC} 🔑 Reset account password"
-        echo -e "${GREEN} 12)${NC} 🤖 Configure Telegram admin bot"
-        echo -e "${GREEN} 13)${NC} 🚀 Run server speed test"
+        echo -e "${GREEN}  4)${NC} Live connections"
+        echo -e "${GREEN}  5)${NC} Traffic & history"
+        echo -e "${GREEN}  6)${NC} Connection banner (Worker)"
+        echo -e "${GREEN}  7)${NC} Check for updates"
+        echo -e "${GREEN}  8)${NC} Server health"
+        echo -e "${GREEN}  9)${NC} Restart services"
+        echo -e "${GREEN} 10)${NC} Extend account"
+        echo -e "${GREEN} 11)${NC} Reset account password"
+        echo -e "${GREEN} 12)${NC} Configure Telegram admin bot"
+        echo -e "${GREEN} 13)${NC} Run server speed test"
         echo ""
-        echo -e "${RED}  0)${NC} ⏻  Exit"
+        echo -e "${RED}  0)${NC} Exit"
         echo ""
         read -p "Select an option: " choice
 

@@ -29,16 +29,16 @@ LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
 GITHUB_REPO="https://raw.githubusercontent.com/PlanAslii/sstieq/main"
 SUCCESS_WORKER_URL="https://mute-bar-da37.planasli1.workers.dev/"
-VERSION="1.3.0"
+VERSION="1.3.1"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 print_banner() {
     if [[ -t 1 ]]; then clear 2>/dev/null || true; fi
     printf '\n%b' "$CYAN"
     printf '╭──────────────────────────────────────────────────────────╮\n'
-    printf '│             ✦  SSH VPN PANEL  ·  INSTALLER  ✦            │\n'
+    printf '│              SSH VPN PANEL - INSTALLER                  │\n'
     printf '│                    Release v%-8s                       │\n' "$VERSION"
-    printf '│      Dropbear  ·  Stunnel  ·  Squid  ·  BadVPN           │\n'
+    printf '│        Dropbear | Stunnel | Squid | BadVPN               │\n'
     printf '╰──────────────────────────────────────────────────────────╯\n'
     printf '%b\n' "$NC"
 }
@@ -211,7 +211,7 @@ CREATE TABLE IF NOT EXISTS user_traffic (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', 'https://mute-bar-da37.planasli1.workers.dev/');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.3.0');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.3.1');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'PlanAslii/sstieq');
 EOF
     sqlite3 "$DB_DIR/users.db" << 'EOF'
@@ -222,7 +222,7 @@ UPDATE settings
 SET value='PlanAslii/sstieq'
 WHERE key='github_repo' AND (value IS NULL OR value='' OR value='YOUR_USERNAME/ssh-vpn-panel');
 UPDATE settings
-SET value='1.3.0'
+SET value='1.3.1'
 WHERE key='panel_version';
 EOF
     chmod 600 "$DB_DIR/users.db"
@@ -349,10 +349,10 @@ setup_banner() {
     cat > "$CONFIG_DIR/banner.txt" << 'EOF'
 
 ╭──────────────────────────────────────────────────────╮
-│                 ✨  YOU'RE CONNECTED  ✨              │
+│                    YOU'RE CONNECTED                     │
 ├──────────────────────────────────────────────────────┤
-│  🚀  SSH VPN  ·  SECURE TUNNEL                       │
-│  ●   STATUS: ONLINE                                  │
+│  SSH VPN - SECURE TUNNEL                                │
+│  STATUS: ONLINE                                        │
 │                                                      │
 │  Your connection is ready. Enjoy a smooth session.  │
 │  Help & updates: configure your support link.        │
@@ -449,7 +449,7 @@ final_message() {
     IP=$(curl -s ifconfig.me || curl -s icanhazip.com || hostname -I | awk '{print $1}')
     echo ""
     echo -e "${GREEN}╭──────────────────────────────────────────────────────────╮${NC}"
-    echo -e "${GREEN}│               ✓  INSTALLATION COMPLETE                  │${NC}"
+    echo -e "${GREEN}│                INSTALLATION COMPLETE                    │${NC}"
     echo -e "${GREEN}├──────────────────────────────────────────────────────────┤${NC}"
     echo -e "${CYAN}  Server IP        ${NC} ${YELLOW}$IP${NC}"
     echo -e "${CYAN}  Dropbear SSH     ${NC} ${YELLOW}143, 444, 666, 5555, 701, 179${NC}"

@@ -68,6 +68,7 @@ if [[ -d "$folder/systemd" ]]; then
     systemctl enable --now sshvpn-banner-refresh.timer sshvpn-traffic-sampler.timer
     if [[ -s "$PANEL_DIR/config/telegram.env" ]]; then
         systemctl enable --now sshvpn-telegram-bot.service || true
+        systemctl restart sshvpn-telegram-bot.service || true
     fi
 fi
 

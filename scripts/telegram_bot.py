@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Admin-only Telegram control bot for SSH VPN Panel (Python standard library only)."""
+"""Admin-only, interactive Telegram control panel for SSH VPN Panel."""
 import datetime
 import html
 import json
@@ -17,16 +17,18 @@ PANEL = "/etc/ssh-vpn-panel"
 DB = f"{PANEL}/db/users.db"
 CONFIG = f"{PANEL}/config/telegram.env"
 PROMPTS = {}
+USERNAME_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_.-]{0,31}")
 
 
 def read_config():
     values = {}
     try:
-        for line in open(CONFIG, encoding="utf-8"):
-            line = line.strip()
-            if "=" in line and not line.startswith("#"):
-                key, value = line.split("=", 1)
-                values[key] = value
+        with open(CONFIG, encoding="utf-8") as stream:
+            for line in stream:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    key, value = line.split("=", 1)
+                    values[key] = value
     except OSError:
         pass
     return values
@@ -38,8 +40,8 @@ def bot_api(method, data=None, token=None, timeout=40):
         raise RuntimeError("Telegram bot token is not configured")
     url = f"https://api.telegram.org/bot{token}/{method}"
     body = urllib.parse.urlencode(data or {}).encode()
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/x-www-form-urlencoded"})
-    with urllib.request.urlopen(req, timeout=timeout) as response:
+    request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         result = json.loads(response.read().decode())
     if not result.get("ok"):
         raise RuntimeError(result.get("description", "Telegram API error"))
@@ -47,15 +49,14 @@ def bot_api(method, data=None, token=None, timeout=40):
 
 
 def validate_token(token):
-    info = bot_api("getMe", token=token, timeout=10)
-    return info.get("username", "bot")
+    return bot_api("getMe", token=token, timeout=10).get("username", "bot")
 
 
 def db_connect():
     import sqlite3
-    db = sqlite3.connect(DB, timeout=10)
-    db.row_factory = sqlite3.Row
-    return db
+    connection = sqlite3.connect(DB, timeout=10)
+    connection.row_factory = sqlite3.Row
+    return connection
 
 
 def esc(value):
@@ -66,111 +67,388 @@ def send(chat_id, text, keyboard=None):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": "true"}
     if keyboard:
         payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False)
-    bot_api("sendMessage", payload, timeout=15)
+    bot_api("sendMessage", payload, timeout=20)
 
 
 def ack(callback_id, text=""):
-    bot_api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:180]}, timeout=15)
-
-
-def menu(chat_id):
-    rows = [
-        [{"text": "➕ Create user", "callback_data": "create"}, {"text": "👥 Users", "callback_data": "users"}],
-        [{"text": "🗑 Delete user", "callback_data": "delete"}, {"text": "🔑 Reset password", "callback_data": "reset"}],
-        [{"text": "📊 Traffic & online", "callback_data": "stats"}, {"text": "🔄 Refresh Worker banner", "callback_data": "worker"}],
-        [{"text": "📅 Extend account", "callback_data": "extend"}],
-        [{"text": "🚀 Run server speed test", "callback_data": "speedtest"}],
-    ]
-    send(chat_id, "<b>PlanAsli SSH VPN Panel</b>\nChoose an action:", rows)
+    try:
+        bot_api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:180]}, timeout=12)
+    except Exception:
+        pass
 
 
 def check_admin(sender_id):
-    cfg = read_config()
-    return str(sender_id) == cfg.get("ADMIN_ID", "")
+    return str(sender_id) == read_config().get("ADMIN_ID", "")
+
+
+def main_keyboard():
+    return [
+        [{"text": "➕ Create account", "callback_data": "create"}, {"text": "👥 Accounts", "callback_data": "users"}],
+        [{"text": "📊 Dashboard", "callback_data": "stats"}, {"text": "🖥 Server status", "callback_data": "status"}],
+        [{"text": "🔑 Reset password", "callback_data": "reset"}, {"text": "📅 Extend account", "callback_data": "extend"}],
+        [{"text": "📉 Expiring soon", "callback_data": "expiring"}, {"text": "🔍 Find account", "callback_data": "search"}],
+        [{"text": "🌐 Refresh Worker", "callback_data": "worker"}, {"text": "🚀 Speed test", "callback_data": "speedtest"}],
+    ]
+
+
+def menu(chat_id):
+    send(chat_id, "<b>🛡 PlanAsli • SSH VPN Admin</b>\n<i>Choose an action below. This bot works only in your private chat and is restricted to your configured admin ID.</i>\n\n<b>Quick commands</b>: /users · /stats · /status · /expiring · /refresh · /speedtest · /user name · /password name · /delete name · /cancel", main_keyboard())
+
+
+def get_users():
+    with db_connect() as db:
+        return db.execute("SELECT id, username, expire_date, is_active, max_devices, bandwidth_limit_gb, created_at, note FROM users ORDER BY id").fetchall()
+
+
+def get_user(username):
+    with db_connect() as db:
+        return db.execute("SELECT id, username, password, expire_date, is_active, max_devices, bandwidth_limit_gb, created_at, note FROM users WHERE username=?", (username,)).fetchone()
+
+
+def traffic_bytes(username):
+    with db_connect() as db:
+        row = db.execute("SELECT bytes_total FROM user_traffic WHERE username=?", (username,)).fetchone()
+    return int(row[0]) if row else 0
 
 
 def connected_for(username):
     try:
-        out = subprocess.check_output(["ps", "-u", username, "-o", "comm="], text=True, stderr=subprocess.DEVNULL, timeout=5)
-        return sum(1 for item in out.splitlines() if item.strip() == "dropbear")
+        result = subprocess.run(["ps", "-u", username, "-o", "comm="], capture_output=True, text=True, timeout=5)
+        return sum(1 for line in result.stdout.splitlines() if line.strip() == "dropbear")
     except Exception:
         return 0
 
 
-def user_list():
-    with db_connect() as db:
-        return db.execute("SELECT username, expire_date, is_active, bandwidth_limit_gb FROM users ORDER BY id").fetchall()
+def account_state(row):
+    if not row["is_active"]:
+        return "🔒 Disabled"
+    try:
+        if datetime.date.fromisoformat(row["expire_date"]) < datetime.date.today():
+            return "⏰ Expired"
+    except (ValueError, TypeError):
+        return "⚠️ Date error"
+    return "🟢 Active"
 
 
-def used_bytes(username):
-    with db_connect() as db:
-        row = db.execute("SELECT bytes_total FROM user_traffic WHERE username=?", (username,)).fetchone()
-        return int(row[0]) if row else 0
+def user_keyboard(username, enabled):
+    toggle_label = "⛔ Disable" if enabled else "✅ Enable"
+    return [
+        [{"text": "🔑 Reset password", "callback_data": "pw:" + username}, {"text": "📅 Extend", "callback_data": "extendu:" + username}],
+        [{"text": "📦 Set limit", "callback_data": "limit:" + username}, {"text": toggle_label, "callback_data": "toggle:" + username}],
+        [{"text": "🗑 Delete", "callback_data": "del:" + username}, {"text": "↩️ Accounts", "callback_data": "users"}],
+    ]
+
+
+def show_user(chat_id, username):
+    row = get_user(username)
+    if not row:
+        send(chat_id, "⚠️ Panel account not found.", [[{"text": "↩️ Back to menu", "callback_data": "home"}]])
+        return
+    used_gb = traffic_bytes(username) / (1024 ** 3)
+    sessions = connected_for(username)
+    try:
+        account = pwd.getpwnam(username)
+        shell = account.pw_shell
+        linux_found = True
+    except KeyError:
+        shell = "missing"
+        linux_found = False
+    passwd_state = "unknown"
+    if linux_found:
+        result = subprocess.run(["passwd", "-S", username], capture_output=True, text=True)
+        fields = result.stdout.split()
+        if len(fields) > 1:
+            passwd_state = {"P": "password set", "L": "locked", "NP": "no password"}.get(fields[1], fields[1])
+    limit = float(row["bandwidth_limit_gb"] or 0)
+    limit_text = "Unlimited" if limit == 0 else f"{limit:g} GB"
+    created = row["created_at"] or "Unknown"
+    note = esc((row["note"] or "—")[:300])
+    text = (
+        f"<b>👤 Account details</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"<b>User:</b> <code>{esc(username)}</code>\n"
+        f"<b>Status:</b> {account_state(row)}\n"
+        f"<b>Expires:</b> {esc(row['expire_date'])}\n"
+        f"<b>Devices limit:</b> {row['max_devices']}\n"
+        f"<b>Stored traffic limit:</b> {esc(limit_text)}\n"
+        f"<b>Traffic estimate:</b> {used_gb:.3f} GB outbound\n"
+        f"<b>Live Dropbear processes:</b> {sessions}\n"
+        f"<b>Linux account:</b> {'present' if linux_found else 'missing'} · {esc(passwd_state)}\n"
+        f"<b>Shell:</b> <code>{esc(shell)}</code>\n"
+        f"<b>Created:</b> {esc(created)}\n"
+        f"<b>Note:</b> {note}\n\n"
+        f"<i>Traffic is an outbound-only estimate, not total device usage.</i>"
+    )
+    send(chat_id, text, user_keyboard(username, bool(row["is_active"])))
 
 
 def render_users(chat_id):
-    rows = user_list()
+    rows = get_users()
     if not rows:
-        send(chat_id, "No panel accounts found.")
+        send(chat_id, "📭 No panel accounts yet.", [[{"text": "➕ Create first account", "callback_data": "create"}]])
         return
-    lines = ["<b>SSH accounts</b>"]
-    for row in rows[:60]:
-        gb = used_bytes(row["username"]) / (1024 ** 3)
-        active = "active" if row["is_active"] else "disabled"
-        lines.append(f"• <code>{esc(row['username'])}</code> · {esc(row['expire_date'])} · {active} · {gb:.3f} GB out")
-    if len(rows) > 60:
-        lines.append(f"…and {len(rows)-60} more")
-    send(chat_id, "\n".join(lines))
+    active = sum(1 for row in rows if row["is_active"] and account_state(row) == "🟢 Active")
+    text = f"<b>👥 Account directory</b>\nTotal: <b>{len(rows)}</b> · Active: <b>{active}</b>\n<i>Select a user for details and actions.</i>"
+    keyboard = []
+    for row in rows[:40]:
+        username = row["username"]
+        gb = traffic_bytes(username) / (1024 ** 3)
+        label = f"{username} · {gb:.2f} GB"
+        keyboard.append([{"text": label[:60], "callback_data": "user:" + username}])
+    keyboard.append([{"text": "↩️ Main menu", "callback_data": "home"}])
+    if len(rows) > 40:
+        text += f"\nShowing first 40 of {len(rows)}; use /user <username> for a specific account."
+    send(chat_id, text, keyboard)
 
 
 def stats_text():
-    rows = user_list()
-    active_users = 0
-    total_sessions = 0
-    lines = ["<b>Server user activity</b>"]
+    rows = get_users()
+    active_count = expired_count = disabled_count = online_accounts = online_sessions = 0
+    total_bytes = 0
+    online_lines = []
     for row in rows:
         username = row["username"]
+        total_bytes += traffic_bytes(username)
+        state = account_state(row)
+        if state == "🟢 Active":
+            active_count += 1
+        elif state == "⏰ Expired":
+            expired_count += 1
+        else:
+            disabled_count += 1
         sessions = connected_for(username)
-        total_sessions += sessions
         if sessions:
-            active_users += 1
-            lines.append(f"• <code>{esc(username)}</code>: {sessions} SSH session(s), {used_bytes(username)/(1024**3):.3f} GB outbound")
-    lines.insert(1, f"Users online: <b>{active_users}</b> · SSH processes: <b>{total_sessions}</b>")
-    if active_users == 0:
-        lines.append("No active Dropbear user processes detected.")
-    lines.append("\nTraffic is a best-effort <b>outbound-only</b> estimate for Dropbear account processes; inbound bytes are not attributed.")
+            online_accounts += 1
+            online_sessions += sessions
+            online_lines.append(f"• <code>{esc(username)}</code> — {sessions} process(es), {traffic_bytes(username)/(1024**3):.3f} GB out")
+    lines = [
+        "<b>📊 PlanAsli • Server dashboard</b>",
+        "━━━━━━━━━━━━━━━━━━",
+        f"👥 Accounts: <b>{len(rows)}</b>  |  🟢 Active: <b>{active_count}</b>",
+        f"⏰ Expired: <b>{expired_count}</b>  |  🔒 Disabled/other: <b>{disabled_count}</b>",
+        f"🔌 Online accounts: <b>{online_accounts}</b>  |  SSH processes: <b>{online_sessions}</b>",
+        f"📦 Tracked outbound: <b>{total_bytes/(1024**3):.3f} GB</b>",
+    ]
+    lines.extend(["", "<b>Connected users</b>"] + (online_lines[:20] or ["No live user processes detected."]))
+    lines.append("\n<i>Per-user traffic is outbound-only and best-effort; inbound bytes are not attributed.</i>")
     latest = f"{PANEL}/logs/speedtest-latest.txt"
     try:
-        with open(latest, encoding="utf-8") as f:
-            lines.append("\n<b>Last server speed test</b>\n<code>" + esc(f.read().strip()[:900]) + "</code>")
+        with open(latest, encoding="utf-8") as stream:
+            lines.extend(["", "<b>🚀 Last server speed test</b>", "<code>" + esc(stream.read().strip()[:700]) + "</code>"])
     except OSError:
-        lines.append("\nNo saved server speed test yet.")
+        lines.extend(["", "No saved speed test yet. Use Speed test from the menu."])
     return "\n".join(lines)
+
+
+def server_status_text():
+    bbr = subprocess.run(["sysctl", "-n", "net.ipv4.tcp_congestion_control"], capture_output=True, text=True).stdout.strip() or "unavailable"
+    services = []
+    for service in ("dropbear", "stunnel4", "squid", "badvpn", "sshvpn-telegram-bot"):
+        result = subprocess.run(["systemctl", "is-active", service], capture_output=True, text=True)
+        status = result.stdout.strip() or "unknown"
+        icon = "🟢" if status == "active" else "🔴"
+        services.append(f"{icon} {service}: <b>{esc(status)}</b>")
+    try:
+        memory = subprocess.run(["free", "-h"], capture_output=True, text=True).stdout.splitlines()
+        memory_line = next((line for line in memory if line.startswith("Mem:")), "Unknown")
+    except Exception:
+        memory_line = "Unknown"
+    disk = subprocess.run(["df", "-h", "/"], capture_output=True, text=True).stdout.splitlines()
+    disk_line = disk[-1] if len(disk) > 1 else "Unknown"
+    return (
+        "<b>🖥 Server status</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"<b>TCP congestion control:</b> <code>{esc(bbr)}</code>\n"
+        f"<b>Memory:</b> <code>{esc(memory_line)}</code>\n"
+        f"<b>Root disk:</b> <code>{esc(disk_line)}</code>\n\n"
+        "<b>Services</b>\n" + "\n".join(services)
+    )
+
+
+def show_expiring(chat_id):
+    today = datetime.date.today()
+    upcoming = []
+    for row in get_users():
+        try:
+            remaining = (datetime.date.fromisoformat(row["expire_date"]) - today).days
+        except (ValueError, TypeError):
+            continue
+        if 0 <= remaining <= 7 and row["is_active"]:
+            upcoming.append((row["username"], row["expire_date"], remaining))
+    if not upcoming:
+        send(chat_id, "✅ No enabled accounts expire within the next 7 days.", [[{"text": "↩️ Main menu", "callback_data": "home"}]])
+        return
+    text = ["<b>⏰ Expiring within 7 days</b>"]
+    keys = []
+    for username, expiry, days in upcoming[:40]:
+        text.append(f"• <code>{esc(username)}</code> — {expiry} ({days} day(s))")
+        keys.append([{"text": f"📅 {username} · {days}d", "callback_data": "user:" + username}])
+    keys.append([{"text": "↩️ Main menu", "callback_data": "home"}])
+    send(chat_id, "\n".join(text), keys)
 
 
 def shell_fix():
     if not os.path.exists("/bin/false") or not os.path.exists("/etc/shells"):
         raise RuntimeError("/bin/false or /etc/shells is missing")
-    with open("/etc/shells", "r+", encoding="utf-8") as f:
-        contents = f.read().splitlines()
+    with open("/etc/shells", "r+", encoding="utf-8") as stream:
+        contents = stream.read().splitlines()
         if "/bin/false" not in contents:
-            f.write("\n/bin/false\n")
+            stream.write("\n/bin/false\n")
+
+
+def home_root_ready():
+    home_root = "/home"
+    try:
+        os.makedirs(home_root, mode=0o755, exist_ok=True)
+        if not os.path.isdir(home_root):
+            raise RuntimeError("/home exists but is not a directory")
+        if not os.access(home_root, os.W_OK | os.X_OK):
+            raise RuntimeError("/home is not writable/searchable by root")
+    except OSError as exc:
+        raise RuntimeError(f"Cannot prepare /home: {exc}. Check the /home mount and disk space.") from exc
+
+
+def expected_home(username):
+    return os.path.join("/home", username)
+
+
+def repair_missing_home(username):
+    account = pwd.getpwnam(username)
+    home = expected_home(username)
+    if account.pw_dir != home:
+        raise RuntimeError(f"Unexpected home path for {username}: {account.pw_dir}; refusing to change it")
+    if os.path.lexists(home):
+        if not recoverable_partial_user(username):
+            raise RuntimeError(f"{home} already exists with unexpected owner/type/content; refusing to overwrite it")
+        ensure_home_owner(username)
+        return
+    try:
+        os.mkdir(home, 0o700)
+        os.chown(home, account.pw_uid, account.pw_gid)
+        os.chmod(home, 0o700)
+    except OSError as exc:
+        raise RuntimeError(f"Could not create {home}: {exc}. Check free disk/inodes and whether /home is read-only.") from exc
+
+
+def skeleton_tree_only(path):
+    """True only when a leftover home contains a subset of the OS default skeleton."""
+    if os.path.islink(path) or not os.path.isdir(path):
+        return False
+    allowed = set()
+    actual = set()
+    for base, dirs, files in os.walk("/etc/skel", followlinks=False):
+        relbase = os.path.relpath(base, "/etc/skel")
+        for name in dirs + files:
+            rel = name if relbase == "." else os.path.join(relbase, name)
+            allowed.add(rel)
+    for base, dirs, files in os.walk(path, followlinks=False):
+        relbase = os.path.relpath(base, path)
+        for name in dirs + files:
+            full = os.path.join(base, name)
+            if os.path.islink(full):
+                return False
+            rel = name if relbase == "." else os.path.join(relbase, name)
+            actual.add(rel)
+    return actual.issubset(allowed)
+
+
+def recoverable_partial_user(username):
+    try:
+        account = pwd.getpwnam(username)
+    except KeyError:
+        return False
+    home = expected_home(username)
+    if account.pw_uid < 1000 or account.pw_shell != "/bin/false" or account.pw_dir != home or connected_for(username) != 0:
+        return False
+    if not os.path.lexists(home):
+        return True
+    # Prior useradd may leave only a standard skeleton directory, owned by root or this UID.
+    try:
+        info = os.stat(home, follow_symlinks=False)
+        return (not os.path.islink(home) and os.path.isdir(home)
+                and info.st_uid in (0, account.pw_uid) and skeleton_tree_only(home))
+    except OSError:
+        return False
+
+
+def ensure_home_owner(username):
+    account = pwd.getpwnam(username)
+    home = expected_home(username)
+    if not skeleton_tree_only(home):
+        raise RuntimeError(f"{home} contains files outside the default OS skeleton; refusing to change its contents")
+    for base, dirs, files in os.walk(home, topdown=True, followlinks=False):
+        os.chown(base, account.pw_uid, account.pw_gid)
+        for name in dirs + files:
+            full = os.path.join(base, name)
+            if os.path.islink(full):
+                raise RuntimeError(f"Symlink found in {home}; refusing to change it")
+            os.chown(full, account.pw_uid, account.pw_gid)
+    os.chmod(home, 0o700)
+
+
+def ensure_linux_account(username, expiry):
+    """Create account; repair a clearly incomplete panel account if home creation failed."""
+    home_root_ready()
+    home = expected_home(username)
+    if subprocess.run(["id", username], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+        if recoverable_partial_user(username):
+            repair_missing_home(username)
+            subprocess.run(["usermod", "-e", expiry, username], check=True, capture_output=True, text=True)
+            return True
+        raise RuntimeError(f"Linux account '{username}' already exists outside the panel; refusing to modify it.")
+    if os.path.lexists(home):
+        raise RuntimeError(f"Home path {home} already exists. No files were changed; inspect it before retrying.")
+
+    first = subprocess.run(["useradd", "-m", "-s", "/bin/false", "-e", expiry, username], capture_output=True, text=True)
+    if first.returncode == 0:
+        return False
+    detail = (first.stderr or first.stdout or "useradd failed").strip()
+
+    # Some useradd versions write the passwd entry before failing to make the home directory.
+    if recoverable_partial_user(username):
+        try:
+            repair_missing_home(username)
+            subprocess.run(["usermod", "-e", expiry, username], check=True, capture_output=True, text=True)
+            return True
+        except Exception as exc:
+            raise RuntimeError(f"Home creation failed for {home}; the account could not be repaired. Check free disk/inodes and /home mount permissions. Original error: {detail}. Repair error: {exc}") from exc
+    # If this invocation created both the passwd record and home but failed later,
+    # accept only the exact expected owner/path and do not touch pre-existing files.
+    try:
+        partial = pwd.getpwnam(username)
+        home_stat = os.stat(home, follow_symlinks=False)
+        if partial.pw_uid >= 1000 and partial.pw_shell == "/bin/false" and partial.pw_dir == home and not os.path.islink(home) and os.path.isdir(home) and home_stat.st_uid == partial.pw_uid:
+            subprocess.run(["usermod", "-e", expiry, username], check=True, capture_output=True, text=True)
+            return True
+    except (KeyError, FileNotFoundError):
+        pass
+
+    lower = detail.lower()
+    if "directory" not in lower and "/home" not in lower:
+        raise RuntimeError(f"useradd failed: {detail}")
+
+    # Fallback: create the Linux identity without a home, then create/chown it explicitly.
+    retry = subprocess.run(["useradd", "-M", "-s", "/bin/false", "-e", expiry, username], capture_output=True, text=True)
+    if retry.returncode:
+        retry_error = (retry.stderr or retry.stdout or "useradd -M failed").strip()
+        raise RuntimeError(f"Could not create the account or its home. useradd: {detail}; fallback: {retry_error}. Check /home permissions, free disk space/inodes, and read-only mounts.")
+    try:
+        repair_missing_home(username)
+        return True
+    except Exception as exc:
+        subprocess.run(["userdel", username], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        raise RuntimeError(f"Account creation was rolled back because {home} could not be prepared. Check /home mount, permissions, and free disk/inodes. Details: {exc}") from exc
 
 
 def create_account(username, days, limit, max_devices=1):
-    if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_.-]{0,31}", username):
+    if not USERNAME_RE.fullmatch(username):
         raise ValueError("Invalid username. Use 1–32 letters, digits, dot, underscore, or hyphen; start with a letter/underscore.")
     shell_fix()
     with db_connect() as db:
         if db.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
             raise ValueError("That username already exists in the panel.")
-    if subprocess.run(["id", username], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-        raise ValueError("That Linux username already exists outside the panel.")
     expiry = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
     password = subprocess.check_output(["openssl", "rand", "-hex", "10"], text=True).strip()
-    created = subprocess.run(["useradd", "-m", "-s", "/bin/false", "-e", expiry, username], capture_output=True, text=True)
-    if created.returncode:
-        raise RuntimeError(created.stderr.strip() or "useradd failed")
+    recovered = ensure_linux_account(username, expiry)
     try:
         changed = subprocess.run(["chpasswd"], input=f"{username}:{password}\n", text=True, capture_output=True)
         if changed.returncode:
@@ -180,9 +458,12 @@ def create_account(username, days, limit, max_devices=1):
                        (username, password, expiry, max_devices, limit, "Created via Telegram"))
             db.execute("INSERT OR IGNORE INTO user_traffic(username,bytes_total,last_counter) VALUES(?,0,0)", (username,))
         started = subprocess.run(["systemctl", "enable", "--now", "dropbear"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
-        shell = pwd.getpwnam(username).pw_shell
+        account = pwd.getpwnam(username)
         password_state = subprocess.run(["passwd", "-S", username], capture_output=True, text=True).stdout.split()
-        if started.returncode or shell != "/bin/false" or "/bin/false" not in open("/etc/shells", encoding="utf-8").read().splitlines() or len(password_state) < 2 or password_state[1] != "P" or subprocess.run(["systemctl", "is-active", "--quiet", "dropbear"]).returncode:
+        with open("/etc/shells", encoding="utf-8") as stream:
+            shells = stream.read().splitlines()
+        service_active = subprocess.run(["systemctl", "is-active", "--quiet", "dropbear"]).returncode == 0
+        if started.returncode or account.pw_shell != "/bin/false" or "/bin/false" not in shells or len(password_state) < 2 or password_state[1] != "P" or not service_active:
             raise RuntimeError("Account was created but SSH readiness verification failed")
         subprocess.run(["/usr/bin/python3", f"{PANEL}/scripts/traffic_sampler.py"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
     except Exception:
@@ -192,11 +473,11 @@ def create_account(username, days, limit, max_devices=1):
         subprocess.run(["/usr/bin/python3", f"{PANEL}/scripts/traffic_sampler.py", "--remove-user", username], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         subprocess.run(["userdel", "-r", username], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         raise
-    return password, expiry
+    return password, expiry, recovered
 
 
 def delete_account(username):
-    if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_.-]{0,31}", username):
+    if not USERNAME_RE.fullmatch(username):
         raise ValueError("Invalid account name")
     with db_connect() as db:
         row = db.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone()
@@ -212,11 +493,10 @@ def delete_account(username):
         db.execute("DELETE FROM users WHERE username=?", (username,))
         db.execute("DELETE FROM connections WHERE username=?", (username,))
         db.execute("DELETE FROM user_traffic WHERE username=?", (username,))
-    return True
 
 
 def reset_password(username):
-    if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_.-]{0,31}", username):
+    if not USERNAME_RE.fullmatch(username):
         raise ValueError("Invalid account name")
     with db_connect() as db:
         row = db.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone()
@@ -235,155 +515,258 @@ def reset_password(username):
     started = subprocess.run(["systemctl", "enable", "--now", "dropbear"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
     state = subprocess.run(["passwd", "-S", username], capture_output=True, text=True).stdout.split()
     shell = pwd.getpwnam(username).pw_shell
-    if started.returncode or shell != "/bin/false" or len(state) < 2 or state[1] != "P" or subprocess.run(["systemctl", "is-active", "--quiet", "dropbear"]).returncode:
-        raise RuntimeError("Password was changed, but SSH readiness verification failed")
-    return password
+    ready = not (started.returncode or shell != "/bin/false" or len(state) < 2 or state[1] != "P" or subprocess.run(["systemctl", "is-active", "--quiet", "dropbear"]).returncode)
+    return password, ready
+
+
+def extend_account(username, days):
+    row = get_user(username)
+    if not row:
+        raise ValueError("Panel account not found")
+    if subprocess.run(["id", username], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+        raise RuntimeError("Linux account is missing; no expiry change was made")
+    today = datetime.date.today()
+    try:
+        current = datetime.date.fromisoformat(row["expire_date"])
+    except (ValueError, TypeError):
+        current = today
+    expiry = (max(today, current) + datetime.timedelta(days=days)).isoformat()
+    result = subprocess.run(["chage", "-E", expiry, username], capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "Could not update Linux account expiry")
+    unlock = subprocess.run(["usermod", "-U", username], capture_output=True, text=True)
+    if unlock.returncode:
+        raise RuntimeError(unlock.stderr.strip() or "Could not unlock Linux account")
+    with db_connect() as db:
+        db.execute("UPDATE users SET expire_date=?, is_active=1 WHERE username=?", (expiry, username))
+    return expiry
+
+
+def set_bandwidth_limit(username, limit):
+    if not get_user(username):
+        raise ValueError("Panel account not found")
+    with db_connect() as db:
+        db.execute("UPDATE users SET bandwidth_limit_gb=? WHERE username=?", (limit, username))
+
+
+def toggle_account(username):
+    row = get_user(username)
+    if not row:
+        raise ValueError("Panel account not found")
+    if row["is_active"]:
+        subprocess.run(["pkill", "-u", username], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run(["usermod", "-L", username], capture_output=True, text=True)
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or "Could not lock Linux account")
+        with db_connect() as db:
+            db.execute("UPDATE users SET is_active=0 WHERE username=?", (username,))
+        return False
+    if datetime.date.fromisoformat(row["expire_date"]) < datetime.date.today():
+        raise ValueError("This account has expired. Extend it before enabling.")
+    result = subprocess.run(["usermod", "-U", username], capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "Could not unlock Linux account")
+    with db_connect() as db:
+        db.execute("UPDATE users SET is_active=1 WHERE username=?", (username,))
+    return True
 
 
 def update_worker(chat_id):
     result = subprocess.run([f"{PANEL}/scripts/refresh_banner.sh"], capture_output=True, text=True, timeout=25)
     detail = (result.stdout + result.stderr).strip()
     if result.returncode == 0:
-        send(chat_id, "✅ Worker banner check completed. The saved default URL was used; Dropbear restarts only if text changed." + ("\n" + esc(detail) if detail else ""))
+        message = "✅ Worker banner check completed using the URL saved in the panel. The SSH service restarts only if the text changed."
+        if detail:
+            message += "\n<code>" + esc(detail[-800:]) + "</code>"
+        send(chat_id, message)
     else:
-        send(chat_id, "⚠️ Worker refresh failed. The existing banner was kept.\n" + esc(detail[-1200:]))
+        send(chat_id, "⚠️ Worker check failed; the current banner was kept.\n<code>" + esc(detail[-1000:]) + "</code>")
 
 
-def on_callback(q):
-    data = q.get("data", "")
-    chat_id = q.get("message", {}).get("chat", {}).get("id")
-    sender = q.get("from", {}).get("id")
-    if not check_admin(sender):
-        ack(q["id"], "Not authorized")
+def run_speedtest(chat_id):
+    send(chat_id, "⏳ Running a server-side test. It can take up to three minutes and does not measure an individual phone.")
+    try:
+        result = subprocess.run([f"{PANEL}/scripts/run_speedtest.sh"], capture_output=True, text=True, timeout=190)
+        output = (result.stdout + result.stderr).strip()
+        label = "✅ Latest server test" if result.returncode == 0 else "⚠️ Speed test failed"
+        send(chat_id, f"<b>{label}</b>\n<code>{esc(output[:2500])}</code>")
+    except Exception as exc:
+        send(chat_id, "⚠️ Speed test error: " + esc(exc))
+
+
+def on_callback(query):
+    data = query.get("data", "")
+    chat_id = query.get("message", {}).get("chat", {}).get("id")
+    sender = query.get("from", {}).get("id")
+    if not check_admin(sender) or query.get("message", {}).get("chat", {}).get("type") != "private":
+        ack(query["id"], "Private chat with the configured admin only")
         return
-    ack(q["id"])
-    if data == "home":
+    ack(query["id"])
+    if data in ("home", "menu"):
         menu(chat_id)
     elif data == "create":
         PROMPTS[sender] = {"step": "username"}
-        send(chat_id, "Send the new <b>username</b> (letters, digits, dot, underscore, hyphen; starts with a letter or underscore).\nThe bot will generate a strong password.")
+        send(chat_id, "<b>➕ Create account</b>\nSend a username (letters, digits, dot, underscore, hyphen; start with a letter or underscore).\nI will generate a secure password. Use /cancel to stop.")
     elif data == "users":
         render_users(chat_id)
+    elif data.startswith("user:"):
+        show_user(chat_id, data[5:])
+    elif data == "search":
+        PROMPTS[sender] = {"step": "search"}
+        send(chat_id, "🔍 Send the exact username to find, or /cancel.")
     elif data == "delete":
-        rows = user_list()
-        if not rows:
-            send(chat_id, "No panel accounts found.")
-        else:
-            keyboard = [[{"text": row["username"], "callback_data": "del:" + row["username"]}] for row in rows[:80]]
-            send(chat_id, "Choose an account to delete:", keyboard)
+        render_users(chat_id)
     elif data.startswith("del:"):
         username = data[4:]
-        send(chat_id, f"Delete <code>{esc(username)}</code> and its home directory?", [[{"text": "Confirm delete", "callback_data": "confirmdel:" + username}, {"text": "Cancel", "callback_data": "home"}]])
+        send(chat_id, f"<b>⚠️ Delete <code>{esc(username)}</code>?</b>\nThis stops its sessions and removes its Linux home directory.", [[{"text": "🗑 Confirm delete", "callback_data": "confirmdel:" + username}, {"text": "↩️ Cancel", "callback_data": "user:" + username}]])
     elif data.startswith("confirmdel:"):
         username = data[len("confirmdel:"):]
         try:
             delete_account(username)
-            send(chat_id, f"✅ Account <code>{esc(username)}</code> deleted; SSH sessions stopped.")
+            send(chat_id, f"✅ <code>{esc(username)}</code> was deleted and its sessions were stopped.", [[{"text": "👥 Accounts", "callback_data": "users"}, {"text": "🏠 Menu", "callback_data": "home"}]])
         except Exception as exc:
-            send(chat_id, "❌ " + esc(exc))
-    elif data == "extend":
-        rows = user_list()
+            send(chat_id, "❌ Delete failed: " + esc(exc))
+    elif data.startswith("pw:"):
+        username = data[3:]
+        try:
+            password, ready = reset_password(username)
+            status = "✅ SSH checks passed" if ready else "⚠️ Password changed; check Dropbear service"
+            send(chat_id, f"<b>{status}</b>\nUsername: <code>{esc(username)}</code>\nPassword: <code>{esc(password)}</code>\nKeep this message private; delete it after copying.", [[{"text": "👤 Account details", "callback_data": "user:" + username}]])
+        except Exception as exc:
+            send(chat_id, "❌ Password reset failed: " + esc(exc))
+    elif data == "reset":
+        rows = get_users()
         if not rows:
-            send(chat_id, "No panel accounts found.")
+            send(chat_id, "📭 No accounts to reset.")
         else:
-            keyboard = [[{"text": row["username"], "callback_data": "extendu:" + row["username"]}] for row in rows[:80]]
+            keyboard = [[{"text": "🔑 " + row["username"], "callback_data": "pw:" + row["username"]}] for row in rows[:40]]
+            send(chat_id, "Choose an account for a generated-password reset:", keyboard)
+    elif data == "extend":
+        rows = get_users()
+        if not rows:
+            send(chat_id, "📭 No accounts to extend.")
+        else:
+            keyboard = [[{"text": "📅 " + row["username"], "callback_data": "extendu:" + row["username"]}] for row in rows[:40]]
             send(chat_id, "Choose an account to extend:", keyboard)
     elif data.startswith("extendu:"):
         username = data[len("extendu:"):]
         PROMPTS[sender] = {"step": "extend_days", "username": username}
-        send(chat_id, f"How many days should <code>{esc(username)}</code> be extended from today? Send 1–3650.")
-    elif data == "reset":
-        rows = user_list()
-        if not rows:
-            send(chat_id, "No panel accounts found.")
-        else:
-            keyboard = [[{"text": row["username"], "callback_data": "pw:" + row["username"]}] for row in rows[:80]]
-            send(chat_id, "Choose an account for a password reset:", keyboard)
-    elif data.startswith("pw:"):
-        username = data[3:]
+        send(chat_id, f"📅 How many days should <code>{esc(username)}</code> be extended? Days are added to the later of today or its current expiry. Send 1–3650.")
+    elif data.startswith("limit:"):
+        username = data[len("limit:"):]
+        PROMPTS[sender] = {"step": "limit", "username": username}
+        send(chat_id, f"📦 Send the stored limit in GB for <code>{esc(username)}</code> (0 = unlimited). Note: this field is not enforced as a hard traffic quota.")
+    elif data.startswith("toggle:"):
+        username = data[len("toggle:"):]
+        send(chat_id, f"Change access state for <code>{esc(username)}</code>?", [[{"text": "✅ Confirm", "callback_data": "confirmtoggle:" + username}, {"text": "↩️ Cancel", "callback_data": "user:" + username}]])
+    elif data.startswith("confirmtoggle:"):
+        username = data[len("confirmtoggle:"):]
         try:
-            password = reset_password(username)
-            send(chat_id, f"✅ Password reset and SSH readiness auto-fix completed.\nUsername: <code>{esc(username)}</code>\nNew password: <code>{esc(password)}</code>\n\nKeep this message private; delete it after copying.")
+            enabled = toggle_account(username)
+            send(chat_id, f"{'✅ Access enabled' if enabled else '⛔ Access disabled'} for <code>{esc(username)}</code>.", [[{"text": "👤 Account details", "callback_data": "user:" + username}]])
         except Exception as exc:
-            send(chat_id, "❌ " + esc(exc))
-    elif data in ("stats", "online"):
-        send(chat_id, stats_text())
+            send(chat_id, "❌ Could not change access: " + esc(exc))
+    elif data == "stats":
+        send(chat_id, stats_text(), [[{"text": "🔄 Refresh dashboard", "callback_data": "stats"}, {"text": "🏠 Menu", "callback_data": "home"}]])
+    elif data == "status":
+        send(chat_id, server_status_text(), [[{"text": "🔄 Refresh status", "callback_data": "status"}, {"text": "🏠 Menu", "callback_data": "home"}]])
+    elif data == "expiring":
+        show_expiring(chat_id)
     elif data == "worker":
         update_worker(chat_id)
     elif data == "speedtest":
-        send(chat_id, "⏳ Running a server-side speed test; this can take up to three minutes. It is not a direct test of the user's phone.")
-        try:
-            result = subprocess.run([f"{PANEL}/scripts/run_speedtest.sh"], capture_output=True, text=True, timeout=190)
-            output = (result.stdout + result.stderr).strip()
-            send(chat_id, ("✅ Latest server test:\n<code>" if result.returncode == 0 else "⚠️ Speed test failed:\n<code>") + esc(output[:2500]) + "</code>")
-        except Exception as exc:
-            send(chat_id, "⚠️ Speed test error: " + esc(exc))
+        run_speedtest(chat_id)
     else:
         send(chat_id, "Unknown action. Use /start.")
+
+
+def handle_command(chat_id, sender, text):
+    command = text.split()[0].split("@", 1)[0].lower()
+    args = text.split()[1:]
+    if command in ("/start", "/menu"):
+        menu(chat_id)
+    elif command == "/help":
+        menu(chat_id)
+    elif command == "/create":
+        PROMPTS[sender] = {"step": "username"}
+        send(chat_id, "<b>➕ Create account</b>\nSend a username. Use /cancel to stop.")
+    elif command == "/search":
+        if args:
+            show_user(chat_id, args[0])
+        else:
+            PROMPTS[sender] = {"step": "search"}
+            send(chat_id, "🔍 Send the exact username to find, or /cancel.")
+    elif command == "/users":
+        render_users(chat_id)
+    elif command in ("/stats", "/online"):
+        send(chat_id, stats_text())
+    elif command == "/status":
+        send(chat_id, server_status_text())
+    elif command == "/expiring":
+        show_expiring(chat_id)
+    elif command == "/refresh":
+        update_worker(chat_id)
+    elif command == "/speedtest":
+        run_speedtest(chat_id)
+    elif command == "/user" and args:
+        show_user(chat_id, args[0])
+    elif command == "/password" and args:
+        username = args[0]
+        try:
+            password, ready = reset_password(username)
+            status = "✅ SSH checks passed" if ready else "⚠️ Password changed; check Dropbear service"
+            send(chat_id, f"<b>{status}</b>\nUsername: <code>{esc(username)}</code>\nPassword: <code>{esc(password)}</code>\nKeep this message private; delete it after copying.")
+        except Exception as exc:
+            send(chat_id, "❌ Password reset failed: " + esc(exc))
+    elif command == "/delete" and args:
+        username = args[0]
+        if not USERNAME_RE.fullmatch(username):
+            send(chat_id, "Invalid username format.")
+        else:
+            send(chat_id, f"<b>⚠️ Delete <code>{esc(username)}</code>?</b> This removes its Linux home directory.", [[{"text": "🗑 Confirm", "callback_data": "confirmdel:" + username}, {"text": "Cancel", "callback_data": "user:" + username}]])
+    elif command == "/cancel":
+        PROMPTS.pop(sender, None)
+        send(chat_id, "✖️ Action cancelled. Use /start to reopen the menu.")
+    else:
+        send(chat_id, "Unknown command. Use /start or /help.")
 
 
 def handle_message(message):
     sender = message.get("from", {}).get("id")
     chat_id = message.get("chat", {}).get("id")
     text = (message.get("text") or "").strip()
-    if not check_admin(sender):
+    if not check_admin(sender) or message.get("chat", {}).get("type") != "private":
         return
-    if text in ("/start", "/menu", "/help"):
-        menu(chat_id)
-        return
-    if text == "/users":
-        render_users(chat_id)
-        return
-    if text == "/stats" or text == "/online":
-        send(chat_id, stats_text())
-        return
-    if text == "/refresh":
-        update_worker(chat_id)
-        return
-    if text == "/speedtest":
-        send(chat_id, "⏳ Running a server-side speed test; this may take up to three minutes.")
-        try:
-            result = subprocess.run([f"{PANEL}/scripts/run_speedtest.sh"], capture_output=True, text=True, timeout=190)
-            output = (result.stdout + result.stderr).strip()
-            send(chat_id, ("✅ Latest server test:\n<code>" if result.returncode == 0 else "⚠️ Speed test failed:\n<code>") + esc(output[:2500]) + "</code>")
-        except Exception as exc:
-            send(chat_id, "⚠️ Speed test error: " + esc(exc))
-        return
-    if text.startswith("/password "):
-        username = text.split(maxsplit=1)[1]
-        try:
-            password = reset_password(username)
-            send(chat_id, f"✅ SSH auto-fix completed.\nUsername: <code>{esc(username)}</code>\nNew password: <code>{esc(password)}</code>")
-        except Exception as exc:
-            send(chat_id, "❌ " + esc(exc))
-        return
-    if text.startswith("/delete "):
-        username = text.split(maxsplit=1)[1]
-        send(chat_id, f"Confirm deletion of <code>{esc(username)}</code>?", [[{"text": "Confirm", "callback_data": "confirmdel:" + username}, {"text": "Cancel", "callback_data": "home"}]])
+    if text.startswith("/"):
+        handle_command(chat_id, sender, text)
         return
     state = PROMPTS.get(sender)
     if not state:
-        send(chat_id, "Use /start to open the control panel.")
+        send(chat_id, "Use /start to open the admin panel.")
         return
-    if state["step"] == "username":
-        if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_.-]{0,31}", text):
-            send(chat_id, "Invalid name; send a valid username or /cancel.")
+    step = state["step"]
+    if step == "search":
+        PROMPTS.pop(sender, None)
+        show_user(chat_id, text)
+    elif step == "username":
+        if not USERNAME_RE.fullmatch(text):
+            send(chat_id, "Invalid name. Try letters, digits, dot, underscore, or hyphen; start with a letter/underscore. Or /cancel.")
             return
         state.update(username=text, step="days")
-        send(chat_id, "Account lifetime in days? Send a number from 1 to 3650.")
-    elif state["step"] == "days":
+        send(chat_id, "⏳ Account lifetime in days? Enter 1–3650.")
+    elif step == "days":
         if not text.isdigit() or not 1 <= int(text) <= 3650:
-            send(chat_id, "Enter whole days from 1 to 3650.")
+            send(chat_id, "Enter a whole number from 1 to 3650.")
             return
         state.update(days=int(text), step="devices")
-        send(chat_id, "Maximum concurrent devices? Send a number from 1 to 100.")
-    elif state["step"] == "devices":
+        send(chat_id, "📱 Maximum devices? Enter 1–100.")
+    elif step == "devices":
         if not text.isdigit() or not 1 <= int(text) <= 100:
             send(chat_id, "Enter a whole number from 1 to 100.")
             return
-        state.update(max_devices=int(text), step="limit")
-        send(chat_id, "Bandwidth limit in GB (0 means unlimited)?")
-    elif state["step"] == "limit":
+        state.update(max_devices=int(text), step="create_limit")
+        send(chat_id, "📦 Stored bandwidth limit in GB (0 = unlimited). This is not a hard quota.")
+    elif step == "create_limit":
         try:
             limit = float(text)
             if not math.isfinite(limit) or limit < 0 or limit > 100000:
@@ -392,29 +775,39 @@ def handle_message(message):
             send(chat_id, "Enter a non-negative number (0 = unlimited).")
             return
         username, days, max_devices = state["username"], state["days"], state["max_devices"]
+        PROMPTS.pop(sender, None)
         try:
-            password, expiry = create_account(username, days, limit, max_devices)
-            del PROMPTS[sender]
-            send(chat_id, f"✅ <b>Account created and SSH auto-fix verified</b>\nUser: <code>{esc(username)}</code>\nPassword: <code>{esc(password)}</code>\nExpires: {expiry}\nMax devices: {max_devices}\nBandwidth limit: {limit:g} GB\n\nThe `/bin/false` shell compatibility and password setup were applied. Keep credentials private.")
+            password, expiry, recovered = create_account(username, days, limit, max_devices)
+            prefix = "♻️ Recovered and completed an earlier incomplete account.\n" if recovered else ""
+            send(chat_id, f"<b>✅ Account ready — SSH checks passed</b>\n{prefix}👤 User: <code>{esc(username)}</code>\n🔑 Password: <code>{esc(password)}</code>\n⏰ Expires: {expiry}\n📱 Max devices: {max_devices}\n📦 Stored limit: {limit:g} GB\n🛠️ Shell compatibility, password, and Dropbear were verified.\n\n<i>Keep the password private; delete this message after copying.</i>", [[{"text": "👤 View account", "callback_data": "user:" + username}, {"text": "🏠 Main menu", "callback_data": "home"}]])
         except Exception as exc:
-            PROMPTS.pop(sender, None)
-            send(chat_id, "❌ Account creation failed: " + esc(exc))
-    elif state["step"] == "extend_days":
+            send(chat_id, "<b>❌ Account creation failed</b>\n" + esc(exc) + "\n\nCheck /home mount, free disk/inodes, and account status. You can retry with the same name if an incomplete panel account was detected.")
+    elif step == "extend_days":
         if not text.isdigit() or not 1 <= int(text) <= 3650:
             send(chat_id, "Enter whole days from 1 to 3650.")
             return
         username = state["username"]
-        if subprocess.run(["id", username], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
-            PROMPTS.pop(sender, None)
-            send(chat_id, "❌ Linux account is missing; no expiry change was made.")
-            return
-        expiry = (datetime.date.today() + datetime.timedelta(days=int(text))).isoformat()
-        with db_connect() as db:
-            db.execute("UPDATE users SET expire_date=?, is_active=1 WHERE username=?", (expiry, username))
-        subprocess.run(["chage", "-E", expiry, username], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["usermod", "-U", username], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         PROMPTS.pop(sender, None)
-        send(chat_id, f"✅ <code>{esc(username)}</code> extended through {expiry}.")
+        try:
+            expiry = extend_account(username, int(text))
+            send(chat_id, f"✅ <code>{esc(username)}</code> extended through <b>{expiry}</b>.", [[{"text": "👤 View account", "callback_data": "user:" + username}]])
+        except Exception as exc:
+            send(chat_id, "❌ Extension failed: " + esc(exc))
+    elif step == "limit":
+        try:
+            limit = float(text)
+            if not math.isfinite(limit) or limit < 0 or limit > 100000:
+                raise ValueError
+        except ValueError:
+            send(chat_id, "Enter a non-negative number (0 = unlimited).")
+            return
+        username = state["username"]
+        PROMPTS.pop(sender, None)
+        try:
+            set_bandwidth_limit(username, limit)
+            send(chat_id, f"✅ Stored limit for <code>{esc(username)}</code> set to <b>{limit:g} GB</b>.", [[{"text": "👤 View account", "callback_data": "user:" + username}]])
+        except Exception as exc:
+            send(chat_id, "❌ Limit update failed: " + esc(exc))
 
 
 def main():
@@ -435,15 +828,11 @@ def main():
         print("Bot is not configured", file=sys.stderr)
         return 1
     try:
-        admin_id = int(admin)
-    except ValueError:
-        print("ADMIN_ID must be a numeric Telegram user ID", file=sys.stderr)
-        return 1
-    try:
+        int(admin)
         info = bot_api("getMe", token=token, timeout=15)
-        print(f"PlanAsli Telegram bot @{info.get('username','')} started")
+        print(f"PlanAsli bot @{info.get('username', '')} started", flush=True)
     except Exception as exc:
-        print(f"Telegram getMe failed: {exc}", file=sys.stderr)
+        print(f"Telegram startup failed: {exc}", file=sys.stderr)
         return 1
     offset = 0
     while True:
@@ -455,12 +844,7 @@ def main():
                     if "callback_query" in update:
                         on_callback(update["callback_query"])
                     elif "message" in update:
-                        msg = update["message"]
-                        if check_admin(msg.get("from", {}).get("id")) and (msg.get("text") or "").strip() == "/cancel":
-                            PROMPTS.pop(msg["from"]["id"], None)
-                            send(msg["chat"]["id"], "Cancelled. Use /start for the menu.")
-                        else:
-                            handle_message(msg)
+                        handle_message(update["message"])
                 except Exception as exc:
                     print(f"Update handler error: {exc}", file=sys.stderr, flush=True)
         except KeyboardInterrupt:
