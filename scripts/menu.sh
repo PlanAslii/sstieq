@@ -66,18 +66,25 @@ log_msg() {
 # Prefer processes whose command contains "dropbear"; otherwise fall back to all user PIDs.
 count_user_sessions() {
     local username="$1"
-    local n=0 d=0
+    local uid n=0
     [[ -n "$username" ]] || { echo 0; return; }
-    d=$(ps -u "$username" -o comm= 2>/dev/null | grep -ciE 'dropbear|dbclient' || true)
+    uid=$(id -u "$username" 2>/dev/null || true)
+    # Processes owned by the account
     n=$(pgrep -u "$username" 2>/dev/null | wc -l || true)
     n=${n:-0}
-    d=${d:-0}
-    # Prefer dropbear-named processes; otherwise any PID owned by the account
-    if [[ "$d" -gt 0 ]]; then
-        echo "$d"
-    else
-        echo "$n" | tr -d '[:space:]'
+    # Dropbear may stay root; match loginuid or real uid in /proc
+    if [[ -n "$uid" ]]; then
+        local pid ruid loginuid
+        for pid in $(pgrep -f dropbear 2>/dev/null); do
+            [[ -r /proc/$pid/status ]] || continue
+            ruid=$(awk '/^Uid:/{print $2; exit}' /proc/$pid/status 2>/dev/null || true)
+            loginuid=$(cat /proc/$pid/loginuid 2>/dev/null || true)
+            if [[ "$ruid" == "$uid" || ( -n "$loginuid" && "$loginuid" != "4294967295" && "$loginuid" == "$uid" ) ]]; then
+                n=$((n + 1))
+            fi
+        done
     fi
+    echo "$n" | tr -d '[:space:]'
 }
 
 ensure_vpn_shell_allowed() {

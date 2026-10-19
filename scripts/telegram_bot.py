@@ -129,71 +129,120 @@ def _uid_for(username):
         return None
 
 
-def connected_for(username):
-    """Count live sessions for a panel account.
-
-    Tries several methods because Dropbear process names and ownership vary by distro:
-    1) ps by user (dropbear-like names preferred)
-    2) pgrep by UID
-    3) scan /proc for matching Uid
-    4) ss ESTAB sockets owned by that UID (best-effort)
-    """
-    uid = _uid_for(username)
-    counts = []
-
+def _read_proc_uid_fields(pid):
+    """Return (ruid, loginuid) for a process; either may be None."""
+    ruid = None
+    loginuid = None
     try:
-        result = subprocess.run(
-            ["ps", "-u", username, "-o", "comm="],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        lines = [line.strip().lower() for line in result.stdout.splitlines() if line.strip()]
-        dropbear_like = sum(1 for name in lines if "dropbear" in name or name == "dbclient")
-        counts.append(dropbear_like if dropbear_like else len(lines))
+        with open(f"/proc/{pid}/status", encoding="utf-8", errors="ignore") as stream:
+            for line in stream:
+                if line.startswith("Uid:"):
+                    ruid = int(line.split()[1])
+                    break
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        with open(f"/proc/{pid}/loginuid", encoding="utf-8", errors="ignore") as stream:
+            val = stream.read().strip()
+            if val.isdigit():
+                n = int(val)
+                # 4294967295 = unset loginuid
+                if n != 0xFFFFFFFF:
+                    loginuid = n
+    except (OSError, ValueError):
+        pass
+    return ruid, loginuid
+
+
+def _dropbear_pids():
+    pids = []
+    try:
+        result = subprocess.run(["pgrep", "-f", "dropbear"], capture_output=True, text=True, timeout=5)
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.isdigit():
+                pids.append(int(line))
     except Exception:
         pass
-
-    try:
-        result = subprocess.run(["pgrep", "-u", username], capture_output=True, text=True, timeout=5)
-        counts.append(len([line for line in result.stdout.splitlines() if line.strip()]))
-    except Exception:
-        pass
-
-    if uid is not None:
+    if not pids:
         try:
-            n = 0
             for entry in os.listdir("/proc"):
                 if not entry.isdigit():
                     continue
                 try:
-                    with open(f"/proc/{entry}/status", encoding="utf-8", errors="ignore") as stream:
-                        for line in stream:
-                            if line.startswith("Uid:"):
-                                if int(line.split()[1]) == uid:
-                                    n += 1
-                                break
-                except (OSError, ValueError, IndexError):
+                    with open(f"/proc/{entry}/comm", encoding="utf-8", errors="ignore") as stream:
+                        comm = stream.read().strip().lower()
+                    if "dropbear" in comm:
+                        pids.append(int(entry))
+                except (OSError, ValueError):
                     continue
-            counts.append(n)
         except OSError:
             pass
+    return pids
 
-    if uid is not None:
-        try:
-            result = subprocess.run(
-                ["ss", "-tnpH", "state", "established"],
-                capture_output=True,
-                text=True,
-                timeout=8,
-            )
-            marker = f"uid:{uid}"
-            n = sum(1 for line in result.stdout.splitlines() if marker in line)
-            counts.append(n)
-        except Exception:
-            pass
 
-    return max(counts) if counts else 0
+def connected_for(username):
+    """Count live sessions for a panel account.
+
+    On some Dropbear setups the session process stays root (or another system uid)
+    while loginuid / auth still belongs to the VPN user. We therefore combine:
+    - processes owned by the account UID
+    - dropbear PIDs whose loginuid matches the account
+    - established sockets reported for those PIDs
+    """
+    uid = _uid_for(username)
+    if uid is None:
+        return 0
+
+    matched_pids = set()
+
+    # 1) Any process currently owned by the account
+    try:
+        result = subprocess.run(["pgrep", "-u", str(uid)], capture_output=True, text=True, timeout=5)
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.isdigit():
+                matched_pids.add(int(line))
+    except Exception:
+        pass
+
+    # 2) Dropbear processes with matching real uid or loginuid
+    for pid in _dropbear_pids():
+        ruid, loginuid = _read_proc_uid_fields(pid)
+        if ruid == uid or loginuid == uid:
+            matched_pids.add(pid)
+
+    # 3) ss ESTAB lines mentioning uid:UID or pid= of matched dropbear
+    try:
+        result = subprocess.run(
+            ["ss", "-tnpH", "state", "established"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        uid_marker = f"uid:{uid}"
+        pid_markers = {f"pid={pid}," for pid in matched_pids} | {f"pid={pid})" for pid in matched_pids}
+        for line in result.stdout.splitlines():
+            if uid_marker in line:
+                # extract pid if present
+                import re as _re
+                m = _re.search(r"pid=(\d+)", line)
+                if m:
+                    matched_pids.add(int(m.group(1)))
+                else:
+                    matched_pids.add(-1)  # at least one socket
+            else:
+                for marker in list(pid_markers):
+                    if marker in line or marker.rstrip(",)") in line:
+                        break
+    except Exception:
+        pass
+
+    # If we only found sockets via uid marker without pid, count 1 session
+    if -1 in matched_pids and len(matched_pids) == 1:
+        return 1
+    matched_pids.discard(-1)
+    return len(matched_pids)
 
 
 def force_traffic_sample():
@@ -208,6 +257,7 @@ def force_traffic_sample():
         return True
     except Exception:
         return False
+
 
 
 def account_state(row):

@@ -29,6 +29,67 @@ def chain_for(uid):
     return f"SVPNU_{uid}"
 
 
+def dropbear_pids_for_uid(uid):
+    """Find dropbear PIDs whose real uid or loginuid matches the panel user."""
+    pids = []
+    try:
+        result = subprocess.run(["pgrep", "-f", "dropbear"], capture_output=True, text=True, timeout=5)
+        candidates = [int(x) for x in result.stdout.split() if x.isdigit()]
+    except Exception:
+        candidates = []
+    if not candidates:
+        try:
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{entry}/comm", encoding="utf-8", errors="ignore") as stream:
+                        if "dropbear" not in stream.read().strip().lower():
+                            continue
+                    candidates.append(int(entry))
+                except (OSError, ValueError):
+                    continue
+        except OSError:
+            return []
+    for pid in candidates:
+        ruid = loginuid = None
+        try:
+            with open(f"/proc/{pid}/status", encoding="utf-8", errors="ignore") as stream:
+                for line in stream:
+                    if line.startswith("Uid:"):
+                        ruid = int(line.split()[1])
+                        break
+        except (OSError, ValueError, IndexError):
+            pass
+        try:
+            with open(f"/proc/{pid}/loginuid", encoding="utf-8", errors="ignore") as stream:
+                val = stream.read().strip()
+                if val.isdigit():
+                    n = int(val)
+                    if n != 0xFFFFFFFF:
+                        loginuid = n
+        except (OSError, ValueError):
+            pass
+        if ruid == uid or loginuid == uid:
+            pids.append(pid)
+    return pids
+
+
+def proc_io_bytes(pid):
+    """Return (read_bytes, write_bytes) from /proc/PID/io or (0, 0)."""
+    try:
+        data = {}
+        with open(f"/proc/{pid}/io", encoding="utf-8", errors="ignore") as stream:
+            for line in stream:
+                if ":" in line:
+                    key, val = line.split(":", 1)
+                    data[key.strip()] = int(val.strip())
+        return data.get("read_bytes", 0), data.get("write_bytes", 0)
+    except (OSError, ValueError):
+        return 0, 0
+
+
+
 def remove_user(username, db):
     try:
         uid = pwd.getpwnam(username).pw_uid
@@ -98,9 +159,19 @@ def sample(db):
             ensure_row(db, username, now)
             continue
 
+        # Fallback: when iptables owner match cannot attribute traffic (Dropbear stays root),
+        # sample /proc/<dropbear-pid>/io write_bytes for PIDs matching this user's loginuid/uid.
         if counter is None:
-            ensure_row(db, username, now)
-            continue
+            io_total = 0
+            for pid in dropbear_pids_for_uid(uid):
+                _r, w = proc_io_bytes(pid)
+                io_total += w
+            if io_total > 0:
+                counter = io_total
+            else:
+                ensure_row(db, username, now)
+                continue
+
         row = db.execute("SELECT bytes_total, last_counter FROM user_traffic WHERE username=?", (username,)).fetchone()
         if row is None:
             db.execute(
