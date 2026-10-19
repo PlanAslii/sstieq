@@ -82,22 +82,24 @@ def check_admin(sender_id):
 
 
 def main_keyboard():
+    # Glass-style feel via emoji + short labels (Telegram inline buttons)
     return [
-        [{"text": "Create account", "callback_data": "create"}, {"text": "Accounts", "callback_data": "users"}],
-        [{"text": "Dashboard", "callback_data": "stats"}, {"text": "Server status", "callback_data": "status"}],
-        [{"text": "Reset password", "callback_data": "reset"}, {"text": "Extend account", "callback_data": "extend"}],
-        [{"text": "Expiring soon", "callback_data": "expiring"}, {"text": "Find account", "callback_data": "search"}],
-        [{"text": "Refresh Worker", "callback_data": "worker"}, {"text": "Speed test", "callback_data": "speedtest"}],
+        [{"text": "✨ Create", "callback_data": "create"}, {"text": "👥 Accounts", "callback_data": "users"}],
+        [{"text": "📊 Dashboard", "callback_data": "stats"}, {"text": "🖥 Status", "callback_data": "status"}],
+        [{"text": "🔑 Reset pass", "callback_data": "reset"}, {"text": "📅 Extend", "callback_data": "extend"}],
+        [{"text": "⏳ Expiring", "callback_data": "expiring"}, {"text": "🔎 Find", "callback_data": "search"}],
+        [{"text": "🌐 Worker", "callback_data": "worker"}, {"text": "🚀 Speed", "callback_data": "speedtest"}],
     ]
 
 
 def menu(chat_id):
     send(
         chat_id,
-        "<b>SSH VPN Admin</b>\n"
-        "────────────────\n"
-        "Private admin panel · restricted to your configured ID.\n\n"
-        "<b>Commands</b>\n"
+        "╭──────────────────────────╮\n"
+        "│  <b>✨ SSH VPN Admin</b>           │\n"
+        "╰──────────────────────────╯\n"
+        "Private glass panel · only your admin ID.\n\n"
+        "<b>Quick commands</b>\n"
         "/users · /stats · /status · /expiring\n"
         "/user name · /password name · /delete name · /cancel",
         main_keyboard(),
@@ -121,40 +123,67 @@ def traffic_bytes(username):
 
 
 def connected_for(username):
+    """Count live sessions for a panel account.
+
+    Dropbear process names vary (dropbear, dropbearmulti, path forms).
+    VPN accounts use /bin/false, so any process owned by the user is a session signal.
+    Prefer dropbear-like commands; fall back to total PID count for that UID.
+    """
     try:
-        result = subprocess.run(["ps", "-u", username, "-o", "comm="], capture_output=True, text=True, timeout=5)
-        return sum(1 for line in result.stdout.splitlines() if line.strip() == "dropbear")
+        result = subprocess.run(
+            ["ps", "-u", username, "-o", "comm="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        lines = [line.strip().lower() for line in result.stdout.splitlines() if line.strip()]
+        dropbear_like = sum(1 for name in lines if "dropbear" in name or name == "dbclient")
+        if dropbear_like:
+            return dropbear_like
+        return len(lines)
     except Exception:
-        return 0
+        try:
+            result = subprocess.run(["pgrep", "-u", username], capture_output=True, text=True, timeout=5)
+            return len([line for line in result.stdout.splitlines() if line.strip()])
+        except Exception:
+            return 0
 
 
 def account_state(row):
     if not row["is_active"]:
-        return "Disabled"
+        return "🔒 Disabled"
     try:
         if datetime.date.fromisoformat(row["expire_date"]) < datetime.date.today():
-            return "Expired"
+            return "⏰ Expired"
     except (ValueError, TypeError):
-        return "Date error"
-    return "Active"
+        return "⚠️ Date error"
+    return "🟢 Active"
 
 
 def user_keyboard(username, enabled):
-    toggle_label = "Disable" if enabled else "Enable"
+    toggle_label = "⛔ Disable" if enabled else "✅ Enable"
     return [
-        [{"text": "Reset password", "callback_data": "pw:" + username}, {"text": "Extend", "callback_data": "extendu:" + username}],
-        [{"text": "Set limit", "callback_data": "limit:" + username}, {"text": toggle_label, "callback_data": "toggle:" + username}],
-        [{"text": "Delete", "callback_data": "del:" + username}, {"text": "Accounts", "callback_data": "users"}],
+        [{"text": "🔑 Reset pass", "callback_data": "pw:" + username}, {"text": "📅 Extend", "callback_data": "extendu:" + username}],
+        [{"text": "📦 Set limit", "callback_data": "limit:" + username}, {"text": toggle_label, "callback_data": "toggle:" + username}],
+        [{"text": "🗑 Delete", "callback_data": "del:" + username}, {"text": "👥 Accounts", "callback_data": "users"}],
     ]
 
 
 def show_user(chat_id, username):
     row = get_user(username)
     if not row:
-        send(chat_id, "Account not found.", [[{"text": "Main menu", "callback_data": "home"}]])
+        send(chat_id, "⚠️ Account not found.", [[{"text": "🏠 Main menu", "callback_data": "home"}]])
         return
     used_gb = traffic_bytes(username) / (1024 ** 3)
     sessions = connected_for(username)
+    last_sample = ""
+    try:
+        with db_connect() as db:
+            samp = db.execute("SELECT last_sample FROM user_traffic WHERE username=?", (username,)).fetchone()
+            if samp and samp[0]:
+                last_sample = str(samp[0])
+    except Exception:
+        pass
     try:
         account = pwd.getpwnam(username)
         shell = account.pw_shell
@@ -171,22 +200,26 @@ def show_user(chat_id, username):
     limit = float(row["bandwidth_limit_gb"] or 0)
     limit_text = "Unlimited" if limit == 0 else f"{limit:g} GB"
     created = row["created_at"] or "Unknown"
-    note = esc((row["note"] or "-")[:300])
-    online_label = f"{sessions} process(es)" if sessions else "none"
+    note = esc((row["note"] or "—")[:300])
+    if sessions:
+        online_label = f"🟢 {sessions} process(es)"
+    else:
+        online_label = "⚪ none"
+    sample_line = f"\n<b>Last sample:</b> {esc(last_sample)}" if last_sample else "\n<b>Last sample:</b> not yet (wait ~1 min after connect)"
     text = (
-        f"<b>Account · {esc(username)}</b>\n"
-        f"────────────────\n"
-        f"<b>Status:</b> {account_state(row)}\n"
-        f"<b>Expires:</b> {esc(row['expire_date'])}\n"
-        f"<b>Devices limit:</b> {row['max_devices']}\n"
-        f"<b>Traffic used:</b> {used_gb:.3f} GB outbound\n"
-        f"<b>Traffic limit:</b> {esc(limit_text)}\n"
-        f"<b>Connected now:</b> {online_label}\n"
-        f"<b>Linux:</b> {'present' if linux_found else 'missing'} · {esc(passwd_state)}\n"
-        f"<b>Shell:</b> <code>{esc(shell)}</code>\n"
-        f"<b>Created:</b> {esc(created)}\n"
-        f"<b>Note:</b> {note}\n\n"
-        f"<i>Traffic is outbound-only estimate. Shell is /bin/false — no server shell access.</i>"
+        f"╭ <b>👤 {esc(username)}</b>\n"
+        f"├ Status: {account_state(row)}\n"
+        f"├ Expires: {esc(row['expire_date'])}\n"
+        f"├ Devices: {row['max_devices']}\n"
+        f"├ 📤 Used: <b>{used_gb:.3f} GB</b> outbound\n"
+        f"├ 📦 Limit: {esc(limit_text)}\n"
+        f"├ 🔌 Connected: {online_label}"
+        f"{sample_line}\n"
+        f"├ Linux: {'present' if linux_found else 'missing'} · {esc(passwd_state)}\n"
+        f"├ Shell: <code>{esc(shell)}</code>\n"
+        f"├ Created: {esc(created)}\n"
+        f"╰ Note: {note}\n\n"
+        f"<i>Traffic updates every ~60s (outbound only). Shell /bin/false — no server shell.</i>"
     )
     send(chat_id, text, user_keyboard(username, bool(row["is_active"])))
 
@@ -194,11 +227,15 @@ def show_user(chat_id, username):
 def render_users(chat_id):
     rows = get_users()
     if not rows:
-        send(chat_id, "No accounts yet.", [[{"text": "Create first account", "callback_data": "create"}]])
+        send(chat_id, "📭 No accounts yet.", [[{"text": "✨ Create first", "callback_data": "create"}]])
         return
-    active = sum(1 for row in rows if row["is_active"] and account_state(row) == "Active")
+    active = sum(1 for row in rows if row["is_active"] and "Active" in account_state(row))
     online_total = 0
-    text = f"<b>Accounts</b>\nTotal: <b>{len(rows)}</b> · Active: <b>{active}</b>\nSelect a user for details, traffic, and enable/disable."
+    text = (
+        f"╭ <b>👥 Accounts</b>\n"
+        f"├ Total: <b>{len(rows)}</b> · Active: <b>{active}</b>\n"
+        f"╰ Tap a user for traffic, online count, enable/disable"
+    )
     keyboard = []
     for row in rows[:40]:
         username = row["username"]
@@ -207,13 +244,14 @@ def render_users(chat_id):
         if sessions:
             online_total += 1
         state = account_state(row)
-        # Label: user · used GB · online count · status
-        label = f"{username} · {gb:.2f}GB · {sessions}on · {state}"
+        # Glass-style row: status dot + user + traffic + online
+        dot = "🟢" if sessions else ("🔒" if "Disabled" in state else "⚪")
+        label = f"{dot} {username} · {gb:.2f}GB · {sessions} online"
         keyboard.append([{"text": label[:64], "callback_data": "user:" + username}])
-    keyboard.append([{"text": "Main menu", "callback_data": "home"}])
+    keyboard.append([{"text": "🏠 Main menu", "callback_data": "home"}])
     if len(rows) > 40:
-        text += f"\nShowing first 40 of {len(rows)}; use /user name for a specific account."
-    text += f"\nOnline accounts right now: <b>{online_total}</b>"
+        text += f"\nShowing first 40 of {len(rows)}; use /user name for others."
+    text += f"\n\n🔌 Online accounts now: <b>{online_total}</b>"
     send(chat_id, text, keyboard)
 
 
@@ -226,9 +264,9 @@ def stats_text():
         username = row["username"]
         total_bytes += traffic_bytes(username)
         state = account_state(row)
-        if state == "Active":
+        if "Active" in state:
             active_count += 1
-        elif state == "Expired":
+        elif "Expired" in state:
             expired_count += 1
         else:
             disabled_count += 1
@@ -236,23 +274,24 @@ def stats_text():
         if sessions:
             online_accounts += 1
             online_sessions += sessions
-            online_lines.append(f"• <code>{esc(username)}</code> — {sessions} process(es), {traffic_bytes(username)/(1024**3):.3f} GB out")
+            online_lines.append(
+                f"🟢 <code>{esc(username)}</code> — {sessions} proc · {traffic_bytes(username)/(1024**3):.3f} GB"
+            )
     lines = [
-        "<b>Dashboard</b>",
-        "────────────────",
-        f"Accounts: <b>{len(rows)}</b>  |  Active: <b>{active_count}</b>",
-        f"Expired: <b>{expired_count}</b>  |  Disabled: <b>{disabled_count}</b>",
-        f"Online accounts: <b>{online_accounts}</b>  |  SSH processes: <b>{online_sessions}</b>",
-        f"Tracked outbound: <b>{total_bytes/(1024**3):.3f} GB</b>",
+        "╭ <b>📊 Dashboard</b>",
+        f"├ 👥 Accounts: <b>{len(rows)}</b>  ·  🟢 Active: <b>{active_count}</b>",
+        f"├ ⏰ Expired: <b>{expired_count}</b>  ·  🔒 Disabled: <b>{disabled_count}</b>",
+        f"├ 🔌 Online: <b>{online_accounts}</b>  ·  processes: <b>{online_sessions}</b>",
+        f"╰ 📤 Tracked out: <b>{total_bytes/(1024**3):.3f} GB</b>",
     ]
-    lines.extend(["", "<b>Connected users</b>"] + (online_lines[:20] or ["No live user processes detected."]))
-    lines.append("\n<i>Per-user traffic is outbound-only and best-effort; inbound bytes are not attributed.</i>")
+    lines.extend(["", "<b>Connected users</b>"] + (online_lines[:20] or ["⚪ No live sessions detected."]))
+    lines.append("\n<i>Traffic is outbound-only · samples every ~60s.</i>")
     latest = f"{PANEL}/logs/speedtest-latest.txt"
     try:
         with open(latest, encoding="utf-8") as stream:
-            lines.extend(["", "<b>Last server speed test</b>", "<code>" + esc(stream.read().strip()[:700]) + "</code>"])
+            lines.extend(["", "<b>🚀 Last speed test</b>", "<code>" + esc(stream.read().strip()[:700]) + "</code>"])
     except OSError:
-        lines.extend(["", "No saved speed test yet. Use Speed test from the menu."])
+        lines.extend(["", "No saved speed test yet."])
     return "\n".join(lines)
 
 
@@ -262,8 +301,8 @@ def server_status_text():
     for service in ("dropbear", "stunnel4", "squid", "badvpn", "sshvpn-telegram-bot"):
         result = subprocess.run(["systemctl", "is-active", service], capture_output=True, text=True)
         status = result.stdout.strip() or "unknown"
-        mark = "ON" if status == "active" else "OFF"
-        services.append(f"[{mark}] {service}: <b>{esc(status)}</b>")
+        icon = "🟢" if status == "active" else "🔴"
+        services.append(f"{icon} {service}: <b>{esc(status)}</b>")
     try:
         memory = subprocess.run(["free", "-h"], capture_output=True, text=True).stdout.splitlines()
         memory_line = next((line for line in memory if line.startswith("Mem:")), "Unknown")
@@ -272,10 +311,10 @@ def server_status_text():
     disk = subprocess.run(["df", "-h", "/"], capture_output=True, text=True).stdout.splitlines()
     disk_line = disk[-1] if len(disk) > 1 else "Unknown"
     return (
-        "<b>Server status</b>\n────────────────\n"
-        f"<b>TCP congestion:</b> <code>{esc(bbr)}</code>\n"
-        f"<b>Memory:</b> <code>{esc(memory_line)}</code>\n"
-        f"<b>Root disk:</b> <code>{esc(disk_line)}</code>\n\n"
+        "╭ <b>🖥 Server status</b>\n"
+        f"├ TCP: <code>{esc(bbr)}</code>\n"
+        f"├ Memory: <code>{esc(memory_line)}</code>\n"
+        f"╰ Disk: <code>{esc(disk_line)}</code>\n\n"
         "<b>Services</b>\n" + "\n".join(services)
     )
 

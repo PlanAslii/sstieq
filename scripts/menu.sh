@@ -60,6 +60,23 @@ log_msg() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_DIR/panel.log"
 }
 
+# Count live VPN sessions for a panel account.
+# Dropbear often does not match `pgrep -x dropbear` (multi-binary / different comm).
+# Accounts use /bin/false, so any process owned by the user is a session indicator.
+# Prefer processes whose command contains "dropbear"; otherwise fall back to all user PIDs.
+count_user_sessions() {
+    local username="$1"
+    local n=0
+    [[ -n "$username" ]] || { echo 0; return; }
+    n=$(ps -u "$username" -o comm= 2>/dev/null | grep -ciE 'dropbear|dbclient' || true)
+    if [[ "${n:-0}" -eq 0 ]]; then
+        n=$(pgrep -u "$username" 2>/dev/null | wc -l)
+        n=${n:-0}
+    fi
+    # trim spaces
+    echo "$n" | tr -d '[:space:]'
+}
+
 ensure_vpn_shell_allowed() {
     local vpn_shell="/bin/false"
     [[ $EUID -eq 0 && -x "$vpn_shell" && -f /etc/shells ]] || return 1
@@ -332,7 +349,7 @@ list_users() {
             status="${GREEN}ACTIVE${NC}"
         fi
         used_gb=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')
-        online=$(pgrep -u "$user" -x dropbear 2>/dev/null | wc -l)
+        online=$(count_user_sessions "$user")
         enabled=$([ "$active" = "1" ] && echo "YES" || echo "NO")
         printf "%-4s %-16s %-12s %-10s %-6s %-8s %-6s %-8s\n" "$id" "$user" "$exp" "$status" "$maxdev" "$used_gb" "$online" "$enabled"
     done
@@ -404,7 +421,7 @@ show_online() {
     total_procs=0
     while IFS='|' read -r username bytes active; do
         [[ -n "$username" ]] || continue
-        count=$(pgrep -u "$username" -x dropbear 2>/dev/null | wc -l)
+        count=$(count_user_sessions "$username")
         used_gb=$(awk -v b="${bytes:-0}" 'BEGIN{printf "%.3f", b/1073741824}')
         if [[ "$count" -gt 0 ]]; then
             st="${GREEN}ONLINE${NC}"
@@ -432,7 +449,7 @@ show_user_traffic() {
     echo -e "${CYAN}──────────────────────────────────────────────────────────────${NC}"
     sqlite3 -separator '|' "$DB" "SELECT u.username, COALESCE(t.bytes_total,0), u.bandwidth_limit_gb, u.is_active FROM users u LEFT JOIN user_traffic t USING(username) ORDER BY u.username;" | while IFS='|' read -r user bytes limit active; do
         used_gb=$(awk -v b="${bytes:-0}" 'BEGIN{printf "%.3f", b/1073741824}')
-        online=$(pgrep -u "$user" -x dropbear 2>/dev/null | wc -l)
+        online=$(count_user_sessions "$user")
         enabled=$([ "$active" = "1" ] && echo "YES" || echo "NO")
         lim=${limit:-0}
         [[ "$lim" == "0" || "$lim" == "0.0" ]] && lim="unlimited"
@@ -626,7 +643,7 @@ main_menu() {
         clear_screen
         IP=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || echo "N/A")
         ver=$(get_setting "panel_version")
-        online=$(sqlite3 "$DB" "SELECT username FROM users WHERE is_active=1;" | while IFS= read -r u; do pgrep -u "$u" -x dropbear >/dev/null 2>&1 && echo "$u"; done | wc -l)
+        online=$(sqlite3 "$DB" "SELECT username FROM users WHERE is_active=1;" | while IFS= read -r u; do c=$(count_user_sessions "$u"); [[ "${c:-0}" -gt 0 ]] && echo "$u"; done | wc -l)
         printf '\n%b' "$PURPLE"
         printf '╭──────────────────────────────────────────────────────────╮\n'
         printf '│       SSH VPN CONTROL PANEL  ·  v%-8s                  │\n' "${ver:-unknown}"

@@ -16,7 +16,7 @@ fi
 command -v sqlite3 >/dev/null || { echo "sqlite3 is required." >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required." >&2; exit 1; }
 
-backup="$PANEL_DIR/backups/v1.3.2-$(date +%Y%m%d-%H%M%S)"
+backup="$PANEL_DIR/backups/v1.3.3-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$backup/scripts" "$backup/systemd"
 cp -a "$PANEL_DIR/scripts/." "$backup/scripts/"
 cp -a /etc/systemd/system/sshvpn-*.service /etc/systemd/system/sshvpn-*.timer "$backup/systemd/" 2>/dev/null || true
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS user_traffic (
     last_sample TEXT
 );
 INSERT OR IGNORE INTO settings(key,value) VALUES ('github_repo','PlanAslii/sstieq');
-UPDATE settings SET value='1.3.2' WHERE key='panel_version';
+UPDATE settings SET value='1.3.3' WHERE key='panel_version';
 SQL
 
 # Remove only the legacy banner polling cron line; preserve all unrelated root cron jobs.
@@ -53,6 +53,6 @@ if command -v apt-get >/dev/null 2>&1 && apt-cache show speedtest-cli >/dev/null
     apt-get install -y speedtest-cli || echo "Warning: speedtest-cli could not be installed; the panel update succeeded."
 fi
 
-echo "SSH VPN Panel upgraded to v1.3.2. Existing firewall rules and banner file were preserved."
+echo "SSH VPN Panel upgraded to v1.3.3. Existing firewall rules and banner file were preserved."
 echo "Worker polling: every 5 seconds; traffic sampling: every 60 seconds."
 echo "Open the menu with: sshvpn"
