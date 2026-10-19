@@ -319,19 +319,25 @@ delete_user() {
 list_users() {
     clear_screen
     print_title "SSH ACCOUNT DIRECTORY"
-    printf "${YELLOW}%-4s %-18s %-14s %-12s %-8s %-8s %-6s${NC}\n" "ID" "Username" "Expire" "Status" "Devices" "BW(GB)" "Active"
-    echo -e "${CYAN}────────────────────────────────────────────────────────────────────────────${NC}"
+    printf "${YELLOW}%-4s %-16s %-12s %-10s %-6s %-8s %-6s %-8s${NC}\n" "ID" "Username" "Expire" "Status" "Dev" "UsedGB" "Online" "Enabled"
+    echo -e "${CYAN}────────────────────────────────────────────────────────────────────────────────${NC}"
 
-    sqlite3 -separator '|' "$DB" "SELECT id, username, expire_date, is_active, max_devices, bandwidth_limit_gb FROM users ORDER BY id;" | while IFS='|' read -r id user exp active maxdev bw; do
-        today=$(date +%Y-%m-%d)
-        if [[ "$exp" < "$today" ]]; then
+    today=$(date +%Y-%m-%d)
+    sqlite3 -separator '|' "$DB" "SELECT u.id, u.username, u.expire_date, u.is_active, u.max_devices, COALESCE(t.bytes_total,0) FROM users u LEFT JOIN user_traffic t USING(username) ORDER BY u.id;" | while IFS='|' read -r id user exp active maxdev bytes; do
+        if [[ "$active" != "1" ]]; then
+            status="${RED}DISABLED${NC}"
+        elif [[ "$exp" < "$today" ]]; then
             status="${RED}EXPIRED${NC}"
         else
             status="${GREEN}ACTIVE${NC}"
         fi
-        act_icon=$([ "$active" = "1" ] && echo "YES" || echo "NO")
-        printf "%-4s %-18s %-14s %-12s %-8s %-8s %-6s\n" "$id" "$user" "$exp" "$status" "$maxdev" "$bw" "$act_icon"
+        used_gb=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')
+        online=$(pgrep -u "$user" -x dropbear 2>/dev/null | wc -l)
+        enabled=$([ "$active" = "1" ] && echo "YES" || echo "NO")
+        printf "%-4s %-16s %-12s %-10s %-6s %-8s %-6s %-8s\n" "$id" "$user" "$exp" "$status" "$maxdev" "$used_gb" "$online" "$enabled"
     done
+    echo ""
+    echo -e "${DIM}UsedGB = outbound estimate | Online = live Dropbear processes for that user${NC}"
     echo ""
     read -p "Press Enter to return..."
 }
@@ -340,37 +346,100 @@ list_users_simple() {
     sqlite3 -header -column "$DB" "SELECT id, username, expire_date, is_active FROM users ORDER BY id;"
 }
 
+toggle_user() {
+    clear_screen
+    print_title "ENABLE / DISABLE ACCOUNT"
+    echo ""
+    list_users_simple
+    echo ""
+    read -p "Username to toggle: " username
+    if [[ -z "$username" ]]; then return; fi
+    if [[ ! "$username" =~ ^[a-zA-Z_][a-zA-Z0-9_.-]{0,31}$ ]]; then
+        echo -e "${RED}Invalid username.${NC}"
+        sleep 2
+        return
+    fi
+
+    row=$(sqlite3 -separator '|' "$DB" "SELECT is_active, expire_date FROM users WHERE username='$username';")
+    if [[ -z "$row" ]]; then
+        echo -e "${RED}Account not found.${NC}"
+        sleep 2
+        return
+    fi
+    IFS='|' read -r active exp <<< "$row"
+    today=$(date +%Y-%m-%d)
+
+    if [[ "$active" = "1" ]]; then
+        pkill -u "$username" 2>/dev/null || true
+        usermod -L "$username" 2>/dev/null || true
+        usermod -s /bin/false "$username" 2>/dev/null || true
+        sqlite3 "$DB" "UPDATE users SET is_active=0 WHERE username='$username';"
+        echo -e "${GREEN}Account $username is now DISABLED. Sessions were terminated and the Linux password was locked.${NC}"
+        log_msg "USER_DISABLE: $username"
+    else
+        if [[ "$exp" < "$today" ]]; then
+            echo -e "${RED}Account is expired. Extend it first (menu option 10), then enable.${NC}"
+            sleep 2
+            return
+        fi
+        usermod -U "$username" 2>/dev/null || true
+        usermod -s /bin/false "$username" 2>/dev/null || true
+        sqlite3 "$DB" "UPDATE users SET is_active=1 WHERE username='$username';"
+        echo -e "${GREEN}Account $username is now ENABLED.${NC}"
+        log_msg "USER_ENABLE: $username"
+    fi
+    sleep 2
+}
+
 # ===================== Connection & Bandwidth =====================
 
 show_online() {
     clear_screen
     print_title "LIVE SSH CONNECTIONS"
     echo "Dropbear processes by panel account (best-effort session indicator):"
-    total=0
-    while IFS= read -r username; do
+    echo ""
+    printf "${YELLOW}%-20s %-10s %-12s %-10s${NC}\n" "Username" "Processes" "Used (GB)" "Status"
+    echo -e "${CYAN}────────────────────────────────────────────────────────${NC}"
+    total_accounts=0
+    total_procs=0
+    while IFS='|' read -r username bytes active; do
         [[ -n "$username" ]] || continue
         count=$(pgrep -u "$username" -x dropbear 2>/dev/null | wc -l)
+        used_gb=$(awk -v b="${bytes:-0}" 'BEGIN{printf "%.3f", b/1073741824}')
         if [[ "$count" -gt 0 ]]; then
-            printf "  %-24s %s process(es)\n" "$username" "$count"
-            total=$((total + 1))
+            st="${GREEN}ONLINE${NC}"
+            total_accounts=$((total_accounts + 1))
+            total_procs=$((total_procs + count))
+        else
+            st="${DIM}idle${NC}"
         fi
-    done < <(sqlite3 "$DB" "SELECT username FROM users WHERE is_active=1 ORDER BY username;")
+        printf "%-20s %-10s %-12s %-10s\n" "$username" "$count" "$used_gb" "$st"
+    done < <(sqlite3 -separator '|' "$DB" "SELECT u.username, COALESCE(t.bytes_total,0), u.is_active FROM users u LEFT JOIN user_traffic t USING(username) WHERE u.is_active=1 ORDER BY u.username;")
     echo ""
-    echo -e "${GREEN}Accounts with a live Dropbear process: $total${NC}"
-    echo "(The daemon may represent multiple tunnel channels; this is not an exact device count.)"
+    echo -e "${GREEN}Online accounts: $total_accounts  |  Total Dropbear processes: $total_procs${NC}"
+    echo "(Process count is a session indicator; one client may open multiple channels.)"
     echo ""
     read -p "Press Enter to return..."
 }
 
 show_user_traffic() {
     clear_screen
-    print_title "PER-ACCOUNT TRAFFIC"
-    echo "Measured outbound bytes from each account's Dropbear-owned sockets."
+    print_title "PER-ACCOUNT TRAFFIC & CONNECTIONS"
+    echo "Outbound estimate from Dropbear-owned sockets + live process count."
     echo "Inbound bytes cannot reliably be attributed per SSH user by this method."
     echo ""
-    sqlite3 -header -column "$DB" "SELECT u.username, printf('%.3f GB', COALESCE(t.bytes_total,0)/1073741824.0) AS outbound_estimate, u.bandwidth_limit_gb AS limit_gb FROM users u LEFT JOIN user_traffic t USING(username) ORDER BY u.username;"
+    printf "${YELLOW}%-18s %-12s %-10s %-8s %-8s${NC}\n" "Username" "Used (GB)" "Limit GB" "Online" "Enabled"
+    echo -e "${CYAN}──────────────────────────────────────────────────────────────${NC}"
+    sqlite3 -separator '|' "$DB" "SELECT u.username, COALESCE(t.bytes_total,0), u.bandwidth_limit_gb, u.is_active FROM users u LEFT JOIN user_traffic t USING(username) ORDER BY u.username;" | while IFS='|' read -r user bytes limit active; do
+        used_gb=$(awk -v b="${bytes:-0}" 'BEGIN{printf "%.3f", b/1073741824}')
+        online=$(pgrep -u "$user" -x dropbear 2>/dev/null | wc -l)
+        enabled=$([ "$active" = "1" ] && echo "YES" || echo "NO")
+        lim=${limit:-0}
+        [[ "$lim" == "0" || "$lim" == "0.0" ]] && lim="unlimited"
+        printf "%-18s %-12s %-10s %-8s %-8s\n" "$user" "$used_gb" "$lim" "$online" "$enabled"
+    done
     echo ""
-    echo -e "${YELLOW}Note:${NC} counters begin when the sampler is installed and are best-effort outbound estimates, not total bidirectional usage."
+    echo -e "${DIM}Counters are best-effort outbound estimates; they start when the sampler is installed.${NC}"
     echo ""
     read -p "Press Enter to return..."
 }
@@ -568,11 +637,12 @@ main_menu() {
         echo -e "${BLUE}${BOLD}  ACCOUNTS${NC}"
         echo -e "${GREEN}  1)${NC} Create account"
         echo -e "${GREEN}  2)${NC} Delete account"
-        echo -e "${GREEN}  3)${NC} List accounts"
+        echo -e "${GREEN}  3)${NC} List accounts (traffic + online)"
+        echo -e "${GREEN} 14)${NC} Enable / Disable account"
         echo ""
         echo -e "${BLUE}${BOLD}  MONITORING & SETTINGS${NC}"
         echo -e "${GREEN}  4)${NC} Live connections"
-        echo -e "${GREEN}  5)${NC} Traffic & history"
+        echo -e "${GREEN}  5)${NC} Traffic & connections"
         echo -e "${GREEN}  6)${NC} Connection banner (Worker)"
         echo -e "${GREEN}  7)${NC} Check for updates"
         echo -e "${GREEN}  8)${NC} Server health"
@@ -609,6 +679,8 @@ main_menu() {
                     newexp=$(date -d "+$d days" +%Y-%m-%d)
                     sqlite3 "$DB" "UPDATE users SET expire_date='$newexp', is_active=1 WHERE username='$u';"
                     chage -E "$newexp" "$u" 2>/dev/null || true
+                    usermod -U "$u" 2>/dev/null || true
+                    usermod -s /bin/false "$u" 2>/dev/null || true
                     echo -e "${GREEN}Account $u extended through $newexp.${NC}"
                     log_msg "USER_EXTEND: $u -> $newexp"
                 fi
@@ -617,6 +689,7 @@ main_menu() {
             11) reset_user_password ;;
             12) configure_telegram_bot ;;
             13) run_speed_test ;;
+            14) toggle_user ;;
             0) exit 0 ;;
             *) echo -e "${RED}Invalid option.${NC}"; sleep 1 ;;
         esac

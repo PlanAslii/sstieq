@@ -1,8 +1,8 @@
 ╭──────────────────────────────────────────────────────────╮
-│                 ✨  PLANASLI CONNECTED  ✨                │
+│                   PLANASLI CONNECTED                     │
 ├──────────────────────────────────────────────────────────┤
-│  🔐  SECURE SSH TUNNEL                                   │
-│  🟢  STATUS: ONLINE                                      │
+│  SECURE SSH TUNNEL                                       │
+│  STATUS: ONLINE                                          │
 │                                                          │
 │  Fast, private, and ready to go.                         │
 │  Enjoy the connection — powered by PlanAsli.             │

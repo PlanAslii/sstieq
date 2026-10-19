@@ -83,16 +83,25 @@ def check_admin(sender_id):
 
 def main_keyboard():
     return [
-        [{"text": "➕ Create account", "callback_data": "create"}, {"text": "👥 Accounts", "callback_data": "users"}],
-        [{"text": "📊 Dashboard", "callback_data": "stats"}, {"text": "🖥 Server status", "callback_data": "status"}],
-        [{"text": "🔑 Reset password", "callback_data": "reset"}, {"text": "📅 Extend account", "callback_data": "extend"}],
-        [{"text": "📉 Expiring soon", "callback_data": "expiring"}, {"text": "🔍 Find account", "callback_data": "search"}],
-        [{"text": "🌐 Refresh Worker", "callback_data": "worker"}, {"text": "🚀 Speed test", "callback_data": "speedtest"}],
+        [{"text": "Create account", "callback_data": "create"}, {"text": "Accounts", "callback_data": "users"}],
+        [{"text": "Dashboard", "callback_data": "stats"}, {"text": "Server status", "callback_data": "status"}],
+        [{"text": "Reset password", "callback_data": "reset"}, {"text": "Extend account", "callback_data": "extend"}],
+        [{"text": "Expiring soon", "callback_data": "expiring"}, {"text": "Find account", "callback_data": "search"}],
+        [{"text": "Refresh Worker", "callback_data": "worker"}, {"text": "Speed test", "callback_data": "speedtest"}],
     ]
 
 
 def menu(chat_id):
-    send(chat_id, "<b>🛡 PlanAsli • SSH VPN Admin</b>\n<i>Choose an action below. This bot works only in your private chat and is restricted to your configured admin ID.</i>\n\n<b>Quick commands</b>: /users · /stats · /status · /expiring · /refresh · /speedtest · /user name · /password name · /delete name · /cancel", main_keyboard())
+    send(
+        chat_id,
+        "<b>SSH VPN Admin</b>\n"
+        "────────────────\n"
+        "Private admin panel · restricted to your configured ID.\n\n"
+        "<b>Commands</b>\n"
+        "/users · /stats · /status · /expiring\n"
+        "/user name · /password name · /delete name · /cancel",
+        main_keyboard(),
+    )
 
 
 def get_users():
@@ -121,28 +130,28 @@ def connected_for(username):
 
 def account_state(row):
     if not row["is_active"]:
-        return "🔒 Disabled"
+        return "Disabled"
     try:
         if datetime.date.fromisoformat(row["expire_date"]) < datetime.date.today():
-            return "⏰ Expired"
+            return "Expired"
     except (ValueError, TypeError):
-        return "⚠️ Date error"
-    return "🟢 Active"
+        return "Date error"
+    return "Active"
 
 
 def user_keyboard(username, enabled):
-    toggle_label = "⛔ Disable" if enabled else "✅ Enable"
+    toggle_label = "Disable" if enabled else "Enable"
     return [
-        [{"text": "🔑 Reset password", "callback_data": "pw:" + username}, {"text": "📅 Extend", "callback_data": "extendu:" + username}],
-        [{"text": "📦 Set limit", "callback_data": "limit:" + username}, {"text": toggle_label, "callback_data": "toggle:" + username}],
-        [{"text": "🗑 Delete", "callback_data": "del:" + username}, {"text": "↩️ Accounts", "callback_data": "users"}],
+        [{"text": "Reset password", "callback_data": "pw:" + username}, {"text": "Extend", "callback_data": "extendu:" + username}],
+        [{"text": "Set limit", "callback_data": "limit:" + username}, {"text": toggle_label, "callback_data": "toggle:" + username}],
+        [{"text": "Delete", "callback_data": "del:" + username}, {"text": "Accounts", "callback_data": "users"}],
     ]
 
 
 def show_user(chat_id, username):
     row = get_user(username)
     if not row:
-        send(chat_id, "⚠️ Panel account not found.", [[{"text": "↩️ Back to menu", "callback_data": "home"}]])
+        send(chat_id, "Account not found.", [[{"text": "Main menu", "callback_data": "home"}]])
         return
     used_gb = traffic_bytes(username) / (1024 ** 3)
     sessions = connected_for(username)
@@ -162,22 +171,22 @@ def show_user(chat_id, username):
     limit = float(row["bandwidth_limit_gb"] or 0)
     limit_text = "Unlimited" if limit == 0 else f"{limit:g} GB"
     created = row["created_at"] or "Unknown"
-    note = esc((row["note"] or "—")[:300])
+    note = esc((row["note"] or "-")[:300])
+    online_label = f"{sessions} process(es)" if sessions else "none"
     text = (
-        f"<b>👤 Account details</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"<b>User:</b> <code>{esc(username)}</code>\n"
+        f"<b>Account · {esc(username)}</b>\n"
+        f"────────────────\n"
         f"<b>Status:</b> {account_state(row)}\n"
         f"<b>Expires:</b> {esc(row['expire_date'])}\n"
         f"<b>Devices limit:</b> {row['max_devices']}\n"
-        f"<b>Stored traffic limit:</b> {esc(limit_text)}\n"
-        f"<b>Traffic estimate:</b> {used_gb:.3f} GB outbound\n"
-        f"<b>Live Dropbear processes:</b> {sessions}\n"
-        f"<b>Linux account:</b> {'present' if linux_found else 'missing'} · {esc(passwd_state)}\n"
+        f"<b>Traffic used:</b> {used_gb:.3f} GB outbound\n"
+        f"<b>Traffic limit:</b> {esc(limit_text)}\n"
+        f"<b>Connected now:</b> {online_label}\n"
+        f"<b>Linux:</b> {'present' if linux_found else 'missing'} · {esc(passwd_state)}\n"
         f"<b>Shell:</b> <code>{esc(shell)}</code>\n"
         f"<b>Created:</b> {esc(created)}\n"
         f"<b>Note:</b> {note}\n\n"
-        f"<i>Traffic is an outbound-only estimate, not total device usage.</i>"
+        f"<i>Traffic is outbound-only estimate. Shell is /bin/false — no server shell access.</i>"
     )
     send(chat_id, text, user_keyboard(username, bool(row["is_active"])))
 
@@ -185,19 +194,26 @@ def show_user(chat_id, username):
 def render_users(chat_id):
     rows = get_users()
     if not rows:
-        send(chat_id, "📭 No panel accounts yet.", [[{"text": "➕ Create first account", "callback_data": "create"}]])
+        send(chat_id, "No accounts yet.", [[{"text": "Create first account", "callback_data": "create"}]])
         return
-    active = sum(1 for row in rows if row["is_active"] and account_state(row) == "🟢 Active")
-    text = f"<b>👥 Account directory</b>\nTotal: <b>{len(rows)}</b> · Active: <b>{active}</b>\n<i>Select a user for details and actions.</i>"
+    active = sum(1 for row in rows if row["is_active"] and account_state(row) == "Active")
+    online_total = 0
+    text = f"<b>Accounts</b>\nTotal: <b>{len(rows)}</b> · Active: <b>{active}</b>\nSelect a user for details, traffic, and enable/disable."
     keyboard = []
     for row in rows[:40]:
         username = row["username"]
         gb = traffic_bytes(username) / (1024 ** 3)
-        label = f"{username} · {gb:.2f} GB"
-        keyboard.append([{"text": label[:60], "callback_data": "user:" + username}])
-    keyboard.append([{"text": "↩️ Main menu", "callback_data": "home"}])
+        sessions = connected_for(username)
+        if sessions:
+            online_total += 1
+        state = account_state(row)
+        # Label: user · used GB · online count · status
+        label = f"{username} · {gb:.2f}GB · {sessions}on · {state}"
+        keyboard.append([{"text": label[:64], "callback_data": "user:" + username}])
+    keyboard.append([{"text": "Main menu", "callback_data": "home"}])
     if len(rows) > 40:
-        text += f"\nShowing first 40 of {len(rows)}; use /user <username> for a specific account."
+        text += f"\nShowing first 40 of {len(rows)}; use /user name for a specific account."
+    text += f"\nOnline accounts right now: <b>{online_total}</b>"
     send(chat_id, text, keyboard)
 
 
@@ -210,9 +226,9 @@ def stats_text():
         username = row["username"]
         total_bytes += traffic_bytes(username)
         state = account_state(row)
-        if state == "🟢 Active":
+        if state == "Active":
             active_count += 1
-        elif state == "⏰ Expired":
+        elif state == "Expired":
             expired_count += 1
         else:
             disabled_count += 1
@@ -222,19 +238,19 @@ def stats_text():
             online_sessions += sessions
             online_lines.append(f"• <code>{esc(username)}</code> — {sessions} process(es), {traffic_bytes(username)/(1024**3):.3f} GB out")
     lines = [
-        "<b>📊 PlanAsli • Server dashboard</b>",
-        "━━━━━━━━━━━━━━━━━━",
-        f"👥 Accounts: <b>{len(rows)}</b>  |  🟢 Active: <b>{active_count}</b>",
-        f"⏰ Expired: <b>{expired_count}</b>  |  🔒 Disabled/other: <b>{disabled_count}</b>",
-        f"🔌 Online accounts: <b>{online_accounts}</b>  |  SSH processes: <b>{online_sessions}</b>",
-        f"📦 Tracked outbound: <b>{total_bytes/(1024**3):.3f} GB</b>",
+        "<b>Dashboard</b>",
+        "────────────────",
+        f"Accounts: <b>{len(rows)}</b>  |  Active: <b>{active_count}</b>",
+        f"Expired: <b>{expired_count}</b>  |  Disabled: <b>{disabled_count}</b>",
+        f"Online accounts: <b>{online_accounts}</b>  |  SSH processes: <b>{online_sessions}</b>",
+        f"Tracked outbound: <b>{total_bytes/(1024**3):.3f} GB</b>",
     ]
     lines.extend(["", "<b>Connected users</b>"] + (online_lines[:20] or ["No live user processes detected."]))
     lines.append("\n<i>Per-user traffic is outbound-only and best-effort; inbound bytes are not attributed.</i>")
     latest = f"{PANEL}/logs/speedtest-latest.txt"
     try:
         with open(latest, encoding="utf-8") as stream:
-            lines.extend(["", "<b>🚀 Last server speed test</b>", "<code>" + esc(stream.read().strip()[:700]) + "</code>"])
+            lines.extend(["", "<b>Last server speed test</b>", "<code>" + esc(stream.read().strip()[:700]) + "</code>"])
     except OSError:
         lines.extend(["", "No saved speed test yet. Use Speed test from the menu."])
     return "\n".join(lines)
@@ -246,8 +262,8 @@ def server_status_text():
     for service in ("dropbear", "stunnel4", "squid", "badvpn", "sshvpn-telegram-bot"):
         result = subprocess.run(["systemctl", "is-active", service], capture_output=True, text=True)
         status = result.stdout.strip() or "unknown"
-        icon = "🟢" if status == "active" else "🔴"
-        services.append(f"{icon} {service}: <b>{esc(status)}</b>")
+        mark = "ON" if status == "active" else "OFF"
+        services.append(f"[{mark}] {service}: <b>{esc(status)}</b>")
     try:
         memory = subprocess.run(["free", "-h"], capture_output=True, text=True).stdout.splitlines()
         memory_line = next((line for line in memory if line.startswith("Mem:")), "Unknown")
@@ -256,8 +272,8 @@ def server_status_text():
     disk = subprocess.run(["df", "-h", "/"], capture_output=True, text=True).stdout.splitlines()
     disk_line = disk[-1] if len(disk) > 1 else "Unknown"
     return (
-        "<b>🖥 Server status</b>\n━━━━━━━━━━━━━━━━━━\n"
-        f"<b>TCP congestion control:</b> <code>{esc(bbr)}</code>\n"
+        "<b>Server status</b>\n────────────────\n"
+        f"<b>TCP congestion:</b> <code>{esc(bbr)}</code>\n"
         f"<b>Memory:</b> <code>{esc(memory_line)}</code>\n"
         f"<b>Root disk:</b> <code>{esc(disk_line)}</code>\n\n"
         "<b>Services</b>\n" + "\n".join(services)
@@ -275,14 +291,14 @@ def show_expiring(chat_id):
         if 0 <= remaining <= 7 and row["is_active"]:
             upcoming.append((row["username"], row["expire_date"], remaining))
     if not upcoming:
-        send(chat_id, "✅ No enabled accounts expire within the next 7 days.", [[{"text": "↩️ Main menu", "callback_data": "home"}]])
+        send(chat_id, "No enabled accounts expire within the next 7 days.", [[{"text": "Main menu", "callback_data": "home"}]])
         return
-    text = ["<b>⏰ Expiring within 7 days</b>"]
+    text = ["<b>Expiring within 7 days</b>"]
     keys = []
     for username, expiry, days in upcoming[:40]:
         text.append(f"• <code>{esc(username)}</code> — {expiry} ({days} day(s))")
-        keys.append([{"text": f"📅 {username} · {days}d", "callback_data": "user:" + username}])
-    keys.append([{"text": "↩️ Main menu", "callback_data": "home"}])
+        keys.append([{"text": f"{username} · {days}d", "callback_data": "user:" + username}])
+    keys.append([{"text": "Main menu", "callback_data": "home"}])
     send(chat_id, "\n".join(text), keys)
 
 
@@ -575,23 +591,23 @@ def update_worker(chat_id):
     result = subprocess.run([f"{PANEL}/scripts/refresh_banner.sh"], capture_output=True, text=True, timeout=25)
     detail = (result.stdout + result.stderr).strip()
     if result.returncode == 0:
-        message = "✅ Worker banner check completed using the URL saved in the panel. The SSH service restarts only if the text changed."
+        message = "Worker banner check completed using the URL saved in the panel. The SSH service restarts only if the text changed."
         if detail:
             message += "\n<code>" + esc(detail[-800:]) + "</code>"
         send(chat_id, message)
     else:
-        send(chat_id, "⚠️ Worker check failed; the current banner was kept.\n<code>" + esc(detail[-1000:]) + "</code>")
+        send(chat_id, "Worker check failed; the current banner was kept.\n<code>" + esc(detail[-1000:]) + "</code>")
 
 
 def run_speedtest(chat_id):
-    send(chat_id, "⏳ Running a server-side test. It can take up to three minutes and does not measure an individual phone.")
+    send(chat_id, "Running a server-side test. It can take up to three minutes and does not measure an individual phone.")
     try:
         result = subprocess.run([f"{PANEL}/scripts/run_speedtest.sh"], capture_output=True, text=True, timeout=190)
         output = (result.stdout + result.stderr).strip()
-        label = "✅ Latest server test" if result.returncode == 0 else "⚠️ Speed test failed"
+        label = "Latest server test" if result.returncode == 0 else "Speed test failed"
         send(chat_id, f"<b>{label}</b>\n<code>{esc(output[:2500])}</code>")
     except Exception as exc:
-        send(chat_id, "⚠️ Speed test error: " + esc(exc))
+        send(chat_id, "Speed test error: " + esc(exc))
 
 
 def on_callback(query):
@@ -606,70 +622,70 @@ def on_callback(query):
         menu(chat_id)
     elif data == "create":
         PROMPTS[sender] = {"step": "username"}
-        send(chat_id, "<b>➕ Create account</b>\nSend a username (letters, digits, dot, underscore, hyphen; start with a letter or underscore).\nI will generate a secure password. Use /cancel to stop.")
+        send(chat_id, "<b>Create account</b>\nSend a username (letters, digits, dot, underscore, hyphen; start with a letter or underscore).\nI will generate a secure password. Use /cancel to stop.")
     elif data == "users":
         render_users(chat_id)
     elif data.startswith("user:"):
         show_user(chat_id, data[5:])
     elif data == "search":
         PROMPTS[sender] = {"step": "search"}
-        send(chat_id, "🔍 Send the exact username to find, or /cancel.")
+        send(chat_id, "Send the exact username to find, or /cancel.")
     elif data == "delete":
         render_users(chat_id)
     elif data.startswith("del:"):
         username = data[4:]
-        send(chat_id, f"<b>⚠️ Delete <code>{esc(username)}</code>?</b>\nThis stops its sessions and removes its Linux home directory.", [[{"text": "🗑 Confirm delete", "callback_data": "confirmdel:" + username}, {"text": "↩️ Cancel", "callback_data": "user:" + username}]])
+        send(chat_id, f"<b>Delete <code>{esc(username)}</code>?</b>\nThis stops its sessions and removes its Linux home directory.", [[{"text": "Confirm delete", "callback_data": "confirmdel:" + username}, {"text": "Cancel", "callback_data": "user:" + username}]])
     elif data.startswith("confirmdel:"):
         username = data[len("confirmdel:"):]
         try:
             delete_account(username)
-            send(chat_id, f"✅ <code>{esc(username)}</code> was deleted and its sessions were stopped.", [[{"text": "👥 Accounts", "callback_data": "users"}, {"text": "🏠 Menu", "callback_data": "home"}]])
+            send(chat_id, f"<code>{esc(username)}</code> was deleted and its sessions were stopped.", [[{"text": "Accounts", "callback_data": "users"}, {"text": "Menu", "callback_data": "home"}]])
         except Exception as exc:
-            send(chat_id, "❌ Delete failed: " + esc(exc))
+            send(chat_id, "Delete failed: " + esc(exc))
     elif data.startswith("pw:"):
         username = data[3:]
         try:
             password, ready = reset_password(username)
-            status = "✅ SSH checks passed" if ready else "⚠️ Password changed; check Dropbear service"
-            send(chat_id, f"<b>{status}</b>\nUsername: <code>{esc(username)}</code>\nPassword: <code>{esc(password)}</code>\nKeep this message private; delete it after copying.", [[{"text": "👤 Account details", "callback_data": "user:" + username}]])
+            status = "SSH checks passed" if ready else "Password changed; check Dropbear service"
+            send(chat_id, f"<b>{status}</b>\nUsername: <code>{esc(username)}</code>\nPassword: <code>{esc(password)}</code>\nKeep this message private; delete it after copying.", [[{"text": "Account details", "callback_data": "user:" + username}]])
         except Exception as exc:
-            send(chat_id, "❌ Password reset failed: " + esc(exc))
+            send(chat_id, "Password reset failed: " + esc(exc))
     elif data == "reset":
         rows = get_users()
         if not rows:
-            send(chat_id, "📭 No accounts to reset.")
+            send(chat_id, "No accounts to reset.")
         else:
-            keyboard = [[{"text": "🔑 " + row["username"], "callback_data": "pw:" + row["username"]}] for row in rows[:40]]
+            keyboard = [[{"text": "" + row["username"], "callback_data": "pw:" + row["username"]}] for row in rows[:40]]
             send(chat_id, "Choose an account for a generated-password reset:", keyboard)
     elif data == "extend":
         rows = get_users()
         if not rows:
-            send(chat_id, "📭 No accounts to extend.")
+            send(chat_id, "No accounts to extend.")
         else:
-            keyboard = [[{"text": "📅 " + row["username"], "callback_data": "extendu:" + row["username"]}] for row in rows[:40]]
+            keyboard = [[{"text": "" + row["username"], "callback_data": "extendu:" + row["username"]}] for row in rows[:40]]
             send(chat_id, "Choose an account to extend:", keyboard)
     elif data.startswith("extendu:"):
         username = data[len("extendu:"):]
         PROMPTS[sender] = {"step": "extend_days", "username": username}
-        send(chat_id, f"📅 How many days should <code>{esc(username)}</code> be extended? Days are added to the later of today or its current expiry. Send 1–3650.")
+        send(chat_id, f"How many days should <code>{esc(username)}</code> be extended? Days are added to the later of today or its current expiry. Send 1–3650.")
     elif data.startswith("limit:"):
         username = data[len("limit:"):]
         PROMPTS[sender] = {"step": "limit", "username": username}
-        send(chat_id, f"📦 Send the stored limit in GB for <code>{esc(username)}</code> (0 = unlimited). Note: this field is not enforced as a hard traffic quota.")
+        send(chat_id, f"Send the stored limit in GB for <code>{esc(username)}</code> (0 = unlimited). Note: this field is not enforced as a hard traffic quota.")
     elif data.startswith("toggle:"):
         username = data[len("toggle:"):]
-        send(chat_id, f"Change access state for <code>{esc(username)}</code>?", [[{"text": "✅ Confirm", "callback_data": "confirmtoggle:" + username}, {"text": "↩️ Cancel", "callback_data": "user:" + username}]])
+        send(chat_id, f"Change access state for <code>{esc(username)}</code>?", [[{"text": "Confirm", "callback_data": "confirmtoggle:" + username}, {"text": "Cancel", "callback_data": "user:" + username}]])
     elif data.startswith("confirmtoggle:"):
         username = data[len("confirmtoggle:"):]
         try:
             enabled = toggle_account(username)
-            send(chat_id, f"{'✅ Access enabled' if enabled else '⛔ Access disabled'} for <code>{esc(username)}</code>.", [[{"text": "👤 Account details", "callback_data": "user:" + username}]])
+            send(chat_id, f"{'Access enabled' if enabled else 'Access disabled'} for <code>{esc(username)}</code>.", [[{"text": "Account details", "callback_data": "user:" + username}]])
         except Exception as exc:
-            send(chat_id, "❌ Could not change access: " + esc(exc))
+            send(chat_id, "Could not change access: " + esc(exc))
     elif data == "stats":
-        send(chat_id, stats_text(), [[{"text": "🔄 Refresh dashboard", "callback_data": "stats"}, {"text": "🏠 Menu", "callback_data": "home"}]])
+        send(chat_id, stats_text(), [[{"text": "Refresh dashboard", "callback_data": "stats"}, {"text": "Menu", "callback_data": "home"}]])
     elif data == "status":
-        send(chat_id, server_status_text(), [[{"text": "🔄 Refresh status", "callback_data": "status"}, {"text": "🏠 Menu", "callback_data": "home"}]])
+        send(chat_id, server_status_text(), [[{"text": "Refresh status", "callback_data": "status"}, {"text": "Menu", "callback_data": "home"}]])
     elif data == "expiring":
         show_expiring(chat_id)
     elif data == "worker":
@@ -689,13 +705,13 @@ def handle_command(chat_id, sender, text):
         menu(chat_id)
     elif command == "/create":
         PROMPTS[sender] = {"step": "username"}
-        send(chat_id, "<b>➕ Create account</b>\nSend a username. Use /cancel to stop.")
+        send(chat_id, "<b>Create account</b>\nSend a username. Use /cancel to stop.")
     elif command == "/search":
         if args:
             show_user(chat_id, args[0])
         else:
             PROMPTS[sender] = {"step": "search"}
-            send(chat_id, "🔍 Send the exact username to find, or /cancel.")
+            send(chat_id, "Send the exact username to find, or /cancel.")
     elif command == "/users":
         render_users(chat_id)
     elif command in ("/stats", "/online"):
@@ -714,19 +730,19 @@ def handle_command(chat_id, sender, text):
         username = args[0]
         try:
             password, ready = reset_password(username)
-            status = "✅ SSH checks passed" if ready else "⚠️ Password changed; check Dropbear service"
+            status = "SSH checks passed" if ready else "Password changed; check Dropbear service"
             send(chat_id, f"<b>{status}</b>\nUsername: <code>{esc(username)}</code>\nPassword: <code>{esc(password)}</code>\nKeep this message private; delete it after copying.")
         except Exception as exc:
-            send(chat_id, "❌ Password reset failed: " + esc(exc))
+            send(chat_id, "Password reset failed: " + esc(exc))
     elif command == "/delete" and args:
         username = args[0]
         if not USERNAME_RE.fullmatch(username):
             send(chat_id, "Invalid username format.")
         else:
-            send(chat_id, f"<b>⚠️ Delete <code>{esc(username)}</code>?</b> This removes its Linux home directory.", [[{"text": "🗑 Confirm", "callback_data": "confirmdel:" + username}, {"text": "Cancel", "callback_data": "user:" + username}]])
+            send(chat_id, f"<b>Delete <code>{esc(username)}</code>?</b> This removes its Linux home directory.", [[{"text": "Confirm", "callback_data": "confirmdel:" + username}, {"text": "Cancel", "callback_data": "user:" + username}]])
     elif command == "/cancel":
         PROMPTS.pop(sender, None)
-        send(chat_id, "✖️ Action cancelled. Use /start to reopen the menu.")
+        send(chat_id, "Action cancelled. Use /start to reopen the menu.")
     else:
         send(chat_id, "Unknown command. Use /start or /help.")
 
@@ -753,19 +769,19 @@ def handle_message(message):
             send(chat_id, "Invalid name. Try letters, digits, dot, underscore, or hyphen; start with a letter/underscore. Or /cancel.")
             return
         state.update(username=text, step="days")
-        send(chat_id, "⏳ Account lifetime in days? Enter 1–3650.")
+        send(chat_id, "Account lifetime in days? Enter 1–3650.")
     elif step == "days":
         if not text.isdigit() or not 1 <= int(text) <= 3650:
             send(chat_id, "Enter a whole number from 1 to 3650.")
             return
         state.update(days=int(text), step="devices")
-        send(chat_id, "📱 Maximum devices? Enter 1–100.")
+        send(chat_id, "Maximum devices? Enter 1–100.")
     elif step == "devices":
         if not text.isdigit() or not 1 <= int(text) <= 100:
             send(chat_id, "Enter a whole number from 1 to 100.")
             return
         state.update(max_devices=int(text), step="create_limit")
-        send(chat_id, "📦 Stored bandwidth limit in GB (0 = unlimited). This is not a hard quota.")
+        send(chat_id, "Stored bandwidth limit in GB (0 = unlimited). This is not a hard quota.")
     elif step == "create_limit":
         try:
             limit = float(text)
@@ -779,9 +795,9 @@ def handle_message(message):
         try:
             password, expiry, recovered = create_account(username, days, limit, max_devices)
             prefix = "♻️ Recovered and completed an earlier incomplete account.\n" if recovered else ""
-            send(chat_id, f"<b>✅ Account ready — SSH checks passed</b>\n{prefix}👤 User: <code>{esc(username)}</code>\n🔑 Password: <code>{esc(password)}</code>\n⏰ Expires: {expiry}\n📱 Max devices: {max_devices}\n📦 Stored limit: {limit:g} GB\n🛠️ Shell compatibility, password, and Dropbear were verified.\n\n<i>Keep the password private; delete this message after copying.</i>", [[{"text": "👤 View account", "callback_data": "user:" + username}, {"text": "🏠 Main menu", "callback_data": "home"}]])
+            send(chat_id, f"<b>Account ready — SSH checks passed</b>\n{prefix}User: <code>{esc(username)}</code>\nPassword: <code>{esc(password)}</code>\n⏰ Expires: {expiry}\nMax devices: {max_devices}\nStored limit: {limit:g} GB\nShell compatibility, password, and Dropbear were verified.\n\n<i>Keep the password private; delete this message after copying.</i>", [[{"text": "View account", "callback_data": "user:" + username}, {"text": "Main menu", "callback_data": "home"}]])
         except Exception as exc:
-            send(chat_id, "<b>❌ Account creation failed</b>\n" + esc(exc) + "\n\nCheck /home mount, free disk/inodes, and account status. You can retry with the same name if an incomplete panel account was detected.")
+            send(chat_id, "<b>Account creation failed</b>\n" + esc(exc) + "\n\nCheck /home mount, free disk/inodes, and account status. You can retry with the same name if an incomplete panel account was detected.")
     elif step == "extend_days":
         if not text.isdigit() or not 1 <= int(text) <= 3650:
             send(chat_id, "Enter whole days from 1 to 3650.")
@@ -790,9 +806,9 @@ def handle_message(message):
         PROMPTS.pop(sender, None)
         try:
             expiry = extend_account(username, int(text))
-            send(chat_id, f"✅ <code>{esc(username)}</code> extended through <b>{expiry}</b>.", [[{"text": "👤 View account", "callback_data": "user:" + username}]])
+            send(chat_id, f"<code>{esc(username)}</code> extended through <b>{expiry}</b>.", [[{"text": "View account", "callback_data": "user:" + username}]])
         except Exception as exc:
-            send(chat_id, "❌ Extension failed: " + esc(exc))
+            send(chat_id, "Extension failed: " + esc(exc))
     elif step == "limit":
         try:
             limit = float(text)
@@ -805,9 +821,9 @@ def handle_message(message):
         PROMPTS.pop(sender, None)
         try:
             set_bandwidth_limit(username, limit)
-            send(chat_id, f"✅ Stored limit for <code>{esc(username)}</code> set to <b>{limit:g} GB</b>.", [[{"text": "👤 View account", "callback_data": "user:" + username}]])
+            send(chat_id, f"Stored limit for <code>{esc(username)}</code> set to <b>{limit:g} GB</b>.", [[{"text": "View account", "callback_data": "user:" + username}]])
         except Exception as exc:
-            send(chat_id, "❌ Limit update failed: " + esc(exc))
+            send(chat_id, "Limit update failed: " + esc(exc))
 
 
 def main():

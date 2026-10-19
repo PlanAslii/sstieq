@@ -29,7 +29,7 @@ LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
 GITHUB_REPO="https://raw.githubusercontent.com/PlanAslii/sstieq/main"
 SUCCESS_WORKER_URL="https://mute-bar-da37.planasli1.workers.dev/"
-VERSION="1.3.1"
+VERSION="1.3.2"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 print_banner() {
@@ -142,17 +142,26 @@ install_dependencies() {
 }
 
 enable_bbr() {
-    echo -e "${YELLOW}[2/9] Enabling BBR TCP congestion control...${NC}"
+    echo -e "${YELLOW}[2/9] Enabling BBR TCP congestion control and buffer tuning...${NC}"
     cat > /etc/sysctl.d/99-bbr.conf << EOF
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
 net.ipv4.tcp_slow_start_after_idle=0
 net.ipv4.tcp_mtu_probing=1
-net.core.rmem_max=16777216
-net.core.wmem_max=16777216
-net.ipv4.tcp_rmem=4096 87380 16777216
-net.ipv4.tcp_wmem=4096 65536 16777216
+net.core.rmem_max=33554432
+net.core.wmem_max=33554432
+net.core.rmem_default=1048576
+net.core.wmem_default=1048576
+net.ipv4.tcp_rmem=4096 131072 33554432
+net.ipv4.tcp_wmem=4096 131072 33554432
+net.core.netdev_max_backlog=16384
+net.ipv4.tcp_max_syn_backlog=8192
+net.ipv4.tcp_tw_reuse=1
+net.ipv4.tcp_fin_timeout=15
+net.ipv4.tcp_keepalive_time=600
+net.ipv4.tcp_keepalive_intvl=30
+net.ipv4.tcp_keepalive_probes=5
 EOF
     sysctl --system > /dev/null 2>&1 || true
     local active available
@@ -211,7 +220,7 @@ CREATE TABLE IF NOT EXISTS user_traffic (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', 'https://mute-bar-da37.planasli1.workers.dev/');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.3.1');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.3.2');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'PlanAslii/sstieq');
 EOF
     sqlite3 "$DB_DIR/users.db" << 'EOF'
@@ -222,7 +231,7 @@ UPDATE settings
 SET value='PlanAslii/sstieq'
 WHERE key='github_repo' AND (value IS NULL OR value='' OR value='YOUR_USERNAME/ssh-vpn-panel');
 UPDATE settings
-SET value='1.3.1'
+SET value='1.3.2'
 WHERE key='panel_version';
 EOF
     chmod 600 "$DB_DIR/users.db"
@@ -232,11 +241,13 @@ EOF
 configure_dropbear() {
     echo -e "${YELLOW}[4/9] Configuring Dropbear SSH ports...${NC}"
     # Main SSH ports: 143, 444, 666, 5555, 701, 179
+    # Larger receive window improves throughput on high-latency links.
+    # Panel VPN accounts use shell=/bin/false so they cannot open an interactive shell.
     cat > /etc/default/dropbear << EOF
 NO_START=0
 DROPBEAR_PORT=143
 DROPBEAR_EXTRA_ARGS="-b /etc/ssh-vpn-panel/config/banner.txt -p 444 -p 666 -p 5555 -p 701 -p 179"
-DROPBEAR_RECEIVE_WINDOW=65536
+DROPBEAR_RECEIVE_WINDOW=1048576
 EOF
 
     # Generate host keys if they do not already exist.
@@ -339,10 +350,15 @@ EOF
 }
 
 configure_sshd() {
-    # Apply optional OpenSSH settings.
-    sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-    sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+    # Harden the system OpenSSH daemon (separate from Dropbear VPN ports).
+    # Panel VPN users authenticate only via Dropbear; they use /bin/false and never get a shell.
+    if [[ -f /etc/ssh/sshd_config ]]; then
+        sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+        sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sed -i 's/^#\?PermitEmptyPasswords.*/PermitEmptyPasswords no/' /etc/ssh/sshd_config
+        grep -q '^X11Forwarding' /etc/ssh/sshd_config || echo 'X11Forwarding no' >> /etc/ssh/sshd_config
+        systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+    fi
 }
 
 setup_banner() {
