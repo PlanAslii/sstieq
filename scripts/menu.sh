@@ -66,25 +66,33 @@ log_msg() {
 # Prefer processes whose command contains "dropbear"; otherwise fall back to all user PIDs.
 count_user_sessions() {
     local username="$1"
-    local uid n=0
+    local uid
+    local -A seen=()
     [[ -n "$username" ]] || { echo 0; return; }
     uid=$(id -u "$username" 2>/dev/null || true)
-    # Processes owned by the account
-    n=$(pgrep -u "$username" 2>/dev/null | wc -l || true)
-    n=${n:-0}
-    # Dropbear may stay root; match loginuid or real uid in /proc
+    local pid
+    for pid in $(pgrep -u "$username" 2>/dev/null); do
+        [[ -n "$pid" ]] && seen[$pid]=1
+    done
     if [[ -n "$uid" ]]; then
-        local pid ruid loginuid
+        local ruid loginuid
         for pid in $(pgrep -f dropbear 2>/dev/null); do
             [[ -r /proc/$pid/status ]] || continue
             ruid=$(awk '/^Uid:/{print $2; exit}' /proc/$pid/status 2>/dev/null || true)
             loginuid=$(cat /proc/$pid/loginuid 2>/dev/null || true)
             if [[ "$ruid" == "$uid" || ( -n "$loginuid" && "$loginuid" != "4294967295" && "$loginuid" == "$uid" ) ]]; then
-                n=$((n + 1))
+                seen[$pid]=1
             fi
         done
+        if command -v ss >/dev/null 2>&1; then
+            while read -r line; do
+                if [[ "$line" =~ pid=([0-9]+) ]]; then
+                    seen[${BASH_REMATCH[1]}]=1
+                fi
+            done < <(ss -tnpH state established 2>/dev/null | grep -E "uid:${uid}([^0-9]|$)" || true)
+        fi
     fi
-    echo "$n" | tr -d '[:space:]'
+    echo "${#seen[@]}"
 }
 
 ensure_vpn_shell_allowed() {
@@ -193,7 +201,7 @@ create_user() {
 
     read -p "Maximum concurrent devices [1]: " max_dev
     max_dev=${max_dev:-1}
-    if [[ ! "$max_dev" =~ ^[0-9]+$ ]] || (( max_dev < 1 || max_dev > 100 )); then echo -e "${RED}Maximum devices must be from 1 to 100.${NC}"; sleep 2; return; fi
+    if [[ ! "$max_dev" =~ ^[0-9]+$ ]] || (( max_dev < 1 || max_dev > 10000 )); then echo -e "${RED}Maximum devices must be from 1 to 10000.${NC}"; sleep 2; return; fi
 
     read -p "Bandwidth limit in GB (0 = unlimited): " bw_limit
     bw_limit=${bw_limit:-0}
@@ -201,17 +209,33 @@ create_user() {
 
     read -p "Note (optional): " note
 
-    # Create the Linux account
+    # Create the Linux account (prefer /home; fall back to panel homes if /home is not writable)
     ensure_vpn_shell_allowed || {
         echo -e "${RED}Could not configure the non-interactive shell for Dropbear.${NC}"
         sleep 2
         return
     }
-    useradd -m -s /bin/false -e "$expire_date" "$username" 2>/dev/null || {
-        echo -e "${RED}Could not create the Linux account.${NC}"
-        sleep 2
-        return
-    }
+    home_base="/home"
+    if ! mkdir -p "$home_base" 2>/dev/null || [[ ! -w "$home_base" ]]; then
+        home_base="/etc/ssh-vpn-panel/homes"
+        mkdir -p "$home_base" 2>/dev/null || true
+        chmod 755 "$home_base" 2>/dev/null || true
+    fi
+    home_path="${home_base}/${username}"
+    if ! useradd -m -d "$home_path" -s /bin/false -e "$expire_date" "$username" 2>/dev/null; then
+        if useradd -M -d "$home_path" -s /bin/false -e "$expire_date" "$username" 2>/dev/null; then
+            mkdir -p "$home_path" && chown "$username":"$username" "$home_path" && chmod 700 "$home_path" || {
+                userdel "$username" 2>/dev/null || true
+                echo -e "${RED}Could not create home directory at $home_path. Check disk space and mount permissions.${NC}"
+                sleep 2
+                return
+            }
+        else
+            echo -e "${RED}Could not create the Linux account. Check /home (or $home_base) is writable, free disk/inodes.${NC}"
+            sleep 2
+            return
+        fi
+    fi
     if ! printf '%s:%s\n' "$username" "$password" | chpasswd; then
         userdel -r "$username" 2>/dev/null || true
         echo -e "${RED}Could not set the account password; account creation was rolled back.${NC}"
@@ -646,6 +670,96 @@ system_info() {
     read -p "Press Enter to return..."
 }
 
+enable_bbr_advanced() {
+    clear_screen
+    print_title "BBR + ADVANCED BANDWIDTH TUNING"
+    echo ""
+    echo -e "${YELLOW}This applies BBR congestion control and larger TCP buffers for better throughput.${NC}"
+    echo -e "${DIM}Requires a kernel that supports tcp_bbr (most modern VPS kernels do).${NC}"
+    echo ""
+
+    # Load module if available
+    if [[ -f /lib/modules/$(uname -r)/kernel/net/ipv4/tcp_bbr.ko ]] || [[ -f /lib/modules/$(uname -r)/kernel/net/ipv4/tcp_bbr.ko.xz ]]; then
+        modprobe tcp_bbr 2>/dev/null || true
+    fi
+    modprobe tcp_bbr 2>/dev/null || true
+
+    cat > /etc/sysctl.d/99-bbr.conf << 'EOF'
+# SSH VPN Panel — BBR + high-throughput buffer tuning
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_slow_start_after_idle=0
+net.ipv4.tcp_mtu_probing=1
+net.core.rmem_max=67108864
+net.core.wmem_max=67108864
+net.core.rmem_default=1048576
+net.core.wmem_default=1048576
+net.ipv4.tcp_rmem=4096 262144 67108864
+net.ipv4.tcp_wmem=4096 262144 67108864
+net.core.netdev_max_backlog=250000
+net.ipv4.tcp_max_syn_backlog=8192
+net.ipv4.tcp_tw_reuse=1
+net.ipv4.tcp_fin_timeout=15
+net.ipv4.tcp_keepalive_time=600
+net.ipv4.tcp_keepalive_intvl=30
+net.ipv4.tcp_keepalive_probes=5
+net.ipv4.tcp_window_scaling=1
+net.ipv4.tcp_timestamps=1
+net.ipv4.tcp_sack=1
+net.core.somaxconn=4096
+EOF
+    sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-bbr.conf >/dev/null 2>&1 || true
+
+    # Try to set fq on the default interface
+    local iface
+    iface=$(ip route show default 2>/dev/null | awk 'NR==1{print $5}')
+    if [[ -n "$iface" ]]; then
+        tc qdisc replace dev "$iface" root fq 2>/dev/null || true
+    fi
+
+    local active available
+    active=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unknown)
+    available=$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null || echo unknown)
+
+    echo ""
+    if [[ "$active" == "bbr" ]]; then
+        echo -e "${GREEN}[OK] BBR is active.${NC}"
+    else
+        echo -e "${YELLOW}[WARN] BBR is not active (current: $active).${NC}"
+        echo -e "${YELLOW}Available algorithms: $available${NC}"
+        echo -e "${DIM}If BBR is missing, upgrade the kernel or use a provider image that includes tcp_bbr.${NC}"
+    fi
+    echo ""
+    echo -e "Configured algorithm : ${GREEN}$active${NC}"
+    echo -e "Available            : $available"
+    printf "Queue discipline     : "; tc qdisc show dev "${iface:-eth0}" 2>/dev/null | head -1 || echo "n/a"
+    echo ""
+    echo -e "${GREEN}Advanced buffer tuning applied (up to 64 MiB TCP windows).${NC}"
+    log_msg "BBR_ADVANCED: active=$active available=$available"
+    echo ""
+    read -p "Press Enter to return..."
+}
+
+refresh_traffic_and_online() {
+    clear_screen
+    print_title "REFRESH TRAFFIC & ONLINE DETECTION"
+    echo ""
+    echo -e "${YELLOW}Restarting traffic sampler timer and running one sample now...${NC}"
+    systemctl enable --now sshvpn-traffic-sampler.timer 2>/dev/null || true
+    systemctl restart sshvpn-traffic-sampler.timer 2>/dev/null || true
+    /usr/bin/python3 "$SCRIPT_DIR/traffic_sampler.py" 2>&1 | tail -20
+    echo ""
+    echo -e "${GREEN}Done. Check options 3 / 4 / 5 for updated Used GB and online counts.${NC}"
+    echo -e "${DIM}Traffic is outbound-only and updates about every 60 seconds while the timer is active.${NC}"
+    echo ""
+    systemctl is-active sshvpn-traffic-sampler.timer >/dev/null 2>&1 \
+        && echo -e "Timer status: ${GREEN}active${NC}" \
+        || echo -e "Timer status: ${RED}inactive — run: systemctl enable --now sshvpn-traffic-sampler.timer${NC}"
+    echo ""
+    read -p "Press Enter to return..."
+}
+
 # ===================== Main Menu =====================
 
 main_menu() {
@@ -678,6 +792,8 @@ main_menu() {
         echo -e "${GREEN} 11)${NC} Reset account password"
         echo -e "${GREEN} 12)${NC} Configure Telegram admin bot"
         echo -e "${GREEN} 13)${NC} Run server speed test"
+        echo -e "${GREEN} 15)${NC} Enable BBR + advanced bandwidth tuning"
+        echo -e "${GREEN} 16)${NC} Refresh traffic counters / online detection"
         echo ""
         echo -e "${RED}  0)${NC} Exit"
         echo ""
@@ -697,6 +813,8 @@ main_menu() {
                 echo -e "${GREEN}Services restarted.${NC}"
                 sleep 2
                 ;;
+            15) enable_bbr_advanced ;;
+            16) refresh_traffic_and_online ;;
             10)
                 clear_screen
                 list_users_simple

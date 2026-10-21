@@ -1,4 +1,4 @@
-# SSH VPN Panel v1.3.5
+# SSH VPN Panel v1.3.6
 
 A colorized, emoji-free English-language terminal panel for managing Dropbear SSH accounts with Stunnel, Squid, and BadVPN UDPGW. This release adds an admin-only Telegram bot, automatic Cloudflare Worker banner polling, per-account outbound traffic estimates, and a server-side speed test.
 
@@ -43,7 +43,7 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-For an existing installation, extract the complete v1.3.5 release archive and run `sudo ./upgrade.sh`. This safe in-place upgrade does not reset UFW or overwrite the currently applied banner. It also repairs a clearly incomplete prior bot-created account when only `/etc/skel` files remain; it refuses to overwrite a home folder with unexpected data. Automatic GitHub updates can only obtain the new features after the v1.3.5 source has been published to the configured repository.
+For an existing installation, extract the complete v1.3.6 release archive and run `sudo ./upgrade.sh`. This safe in-place upgrade does not reset UFW or overwrite the currently applied banner. It also repairs a clearly incomplete prior bot-created account when only `/etc/skel` files remain; it refuses to overwrite a home folder with unexpected data. Automatic GitHub updates can only obtain the new features after the v1.3.6 source has been published to the configured repository.
 
 Open the menu with:
 

@@ -29,7 +29,7 @@ LOG_DIR="$PANEL_DIR/logs"
 CONFIG_DIR="$PANEL_DIR/config"
 GITHUB_REPO="https://raw.githubusercontent.com/PlanAslii/sstieq/main"
 SUCCESS_WORKER_URL="https://mute-bar-da37.planasli1.workers.dev/"
-VERSION="1.3.5"
+VERSION="1.3.6"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 print_banner() {
@@ -176,7 +176,8 @@ EOF
 
 setup_directories() {
     mkdir -p "$PANEL_DIR" "$SCRIPT_DIR" "$DB_DIR" "$LOG_DIR" "$CONFIG_DIR"
-    mkdir -p "$PANEL_DIR/worker"
+    mkdir -p "$PANEL_DIR/worker" "$PANEL_DIR/homes"
+    chmod 755 "$PANEL_DIR/homes" 2>/dev/null || true
     mkdir -p /etc/dropbear
     touch "$LOG_DIR/panel.log"
     touch "$LOG_DIR/auth.log"
@@ -220,7 +221,7 @@ CREATE TABLE IF NOT EXISTS user_traffic (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('success_worker_url', 'https://mute-bar-da37.planasli1.workers.dev/');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.3.5');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('panel_version', '1.3.6');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('github_repo', 'PlanAslii/sstieq');
 EOF
     sqlite3 "$DB_DIR/users.db" << 'EOF'
@@ -231,7 +232,7 @@ UPDATE settings
 SET value='PlanAslii/sstieq'
 WHERE key='github_repo' AND (value IS NULL OR value='' OR value='YOUR_USERNAME/ssh-vpn-panel');
 UPDATE settings
-SET value='1.3.5'
+SET value='1.3.6'
 WHERE key='panel_version';
 EOF
     chmod 600 "$DB_DIR/users.db"

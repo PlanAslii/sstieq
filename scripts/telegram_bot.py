@@ -471,20 +471,41 @@ def shell_fix():
             stream.write("\n/bin/false\n")
 
 
+def _resolve_home_root():
+    """Prefer /home; fall back to panel-managed homes when /home is not usable."""
+    candidates = ["/home", f"{PANEL}/homes"]
+    last_error = None
+    for home_root in candidates:
+        try:
+            os.makedirs(home_root, mode=0o755, exist_ok=True)
+            if not os.path.isdir(home_root):
+                last_error = f"{home_root} exists but is not a directory"
+                continue
+            # Try to ensure root can write/search; some mounts are read-only.
+            if not os.access(home_root, os.W_OK | os.X_OK):
+                try:
+                    os.chmod(home_root, 0o755)
+                except OSError:
+                    pass
+            if not os.access(home_root, os.W_OK | os.X_OK):
+                last_error = f"{home_root} is not writable/searchable by root"
+                continue
+            return home_root
+        except OSError as exc:
+            last_error = f"{home_root}: {exc}"
+            continue
+    raise RuntimeError(
+        f"Cannot prepare a writable home base. Tried /home and {PANEL}/homes. "
+        f"Last error: {last_error}. Check mount options (rw), free disk/inodes, and that root is not restricted."
+    )
+
+
 def home_root_ready():
-    home_root = "/home"
-    try:
-        os.makedirs(home_root, mode=0o755, exist_ok=True)
-        if not os.path.isdir(home_root):
-            raise RuntimeError("/home exists but is not a directory")
-        if not os.access(home_root, os.W_OK | os.X_OK):
-            raise RuntimeError("/home is not writable/searchable by root")
-    except OSError as exc:
-        raise RuntimeError(f"Cannot prepare /home: {exc}. Check the /home mount and disk space.") from exc
+    _resolve_home_root()
 
 
 def expected_home(username):
-    return os.path.join("/home", username)
+    return os.path.join(_resolve_home_root(), username)
 
 
 def repair_missing_home(username):
@@ -574,7 +595,11 @@ def ensure_linux_account(username, expiry):
     if os.path.lexists(home):
         raise RuntimeError(f"Home path {home} already exists. No files were changed; inspect it before retrying.")
 
-    first = subprocess.run(["useradd", "-m", "-s", "/bin/false", "-e", expiry, username], capture_output=True, text=True)
+    # Use explicit -d so fallback home base under the panel works when /home is read-only.
+    first = subprocess.run(
+        ["useradd", "-m", "-d", home, "-s", "/bin/false", "-e", expiry, username],
+        capture_output=True, text=True,
+    )
     if first.returncode == 0:
         return False
     detail = (first.stderr or first.stdout or "useradd failed").strip()
@@ -586,33 +611,46 @@ def ensure_linux_account(username, expiry):
             subprocess.run(["usermod", "-e", expiry, username], check=True, capture_output=True, text=True)
             return True
         except Exception as exc:
-            raise RuntimeError(f"Home creation failed for {home}; the account could not be repaired. Check free disk/inodes and /home mount permissions. Original error: {detail}. Repair error: {exc}") from exc
+            raise RuntimeError(
+                f"Home creation failed for {home}; the account could not be repaired. "
+                f"Check free disk/inodes and home mount permissions. Original error: {detail}. Repair error: {exc}"
+            ) from exc
     # If this invocation created both the passwd record and home but failed later,
     # accept only the exact expected owner/path and do not touch pre-existing files.
     try:
         partial = pwd.getpwnam(username)
         home_stat = os.stat(home, follow_symlinks=False)
-        if partial.pw_uid >= 1000 and partial.pw_shell == "/bin/false" and partial.pw_dir == home and not os.path.islink(home) and os.path.isdir(home) and home_stat.st_uid == partial.pw_uid:
+        if (partial.pw_uid >= 1000 and partial.pw_shell == "/bin/false" and partial.pw_dir == home
+                and not os.path.islink(home) and os.path.isdir(home) and home_stat.st_uid == partial.pw_uid):
             subprocess.run(["usermod", "-e", expiry, username], check=True, capture_output=True, text=True)
             return True
     except (KeyError, FileNotFoundError):
         pass
 
     lower = detail.lower()
-    if "directory" not in lower and "/home" not in lower:
+    if "directory" not in lower and "home" not in lower:
         raise RuntimeError(f"useradd failed: {detail}")
 
     # Fallback: create the Linux identity without a home, then create/chown it explicitly.
-    retry = subprocess.run(["useradd", "-M", "-s", "/bin/false", "-e", expiry, username], capture_output=True, text=True)
+    retry = subprocess.run(
+        ["useradd", "-M", "-d", home, "-s", "/bin/false", "-e", expiry, username],
+        capture_output=True, text=True,
+    )
     if retry.returncode:
         retry_error = (retry.stderr or retry.stdout or "useradd -M failed").strip()
-        raise RuntimeError(f"Could not create the account or its home. useradd: {detail}; fallback: {retry_error}. Check /home permissions, free disk space/inodes, and read-only mounts.")
+        raise RuntimeError(
+            f"Could not create the account or its home. useradd: {detail}; fallback: {retry_error}. "
+            f"Check home permissions, free disk space/inodes, and read-only mounts."
+        )
     try:
         repair_missing_home(username)
         return True
     except Exception as exc:
         subprocess.run(["userdel", username], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        raise RuntimeError(f"Account creation was rolled back because {home} could not be prepared. Check /home mount, permissions, and free disk/inodes. Details: {exc}") from exc
+        raise RuntimeError(
+            f"Account creation was rolled back because {home} could not be prepared. "
+            f"Check mount, permissions, and free disk/inodes. Details: {exc}"
+        ) from exc
 
 
 def create_account(username, days, limit, max_devices=1):
@@ -940,10 +978,10 @@ def handle_message(message):
             send(chat_id, "Enter a whole number from 1 to 3650.")
             return
         state.update(days=int(text), step="devices")
-        send(chat_id, "Maximum devices? Enter 1–100.")
+        send(chat_id, "Maximum devices? Enter 1–10000.")
     elif step == "devices":
-        if not text.isdigit() or not 1 <= int(text) <= 100:
-            send(chat_id, "Enter a whole number from 1 to 100.")
+        if not text.isdigit() or not 1 <= int(text) <= 10000:
+            send(chat_id, "Enter a whole number from 1 to 10000.")
             return
         state.update(max_devices=int(text), step="create_limit")
         send(chat_id, "Stored bandwidth limit in GB (0 = unlimited). This is not a hard quota.")
